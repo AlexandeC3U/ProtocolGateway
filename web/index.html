@@ -1,0 +1,1759 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connector Gateway - Console</title>
+    <meta name="color-scheme" content="dark">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        :root {
+            --bg: #0F1216;
+            --surface: #161B22;
+            --surface-2: #12171f;
+            --border: #2A2F36;
+            --text: #E6EDF3;
+            --muted: #9AA4B2;
+            --muted-2: #707A87;
+
+            --accent: #3B82F6;
+            --ok: #22C55E;
+            --warn: #F59E0B;
+            --err: #EF4444;
+
+            --radius: 4px;
+            --transition: 120ms linear;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        html, body { height: 100%; }
+
+        body {
+            font-family: 'IBM Plex Sans', 'Inter', 'Source Sans 3', system-ui, -apple-system, 'Segoe UI', Roboto, Ubuntu, sans-serif;
+            font-size: 14px;
+            color: var(--text);
+            background: var(--bg);
+            overflow: hidden;
+        }
+
+        a { color: inherit; }
+
+        :focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+
+        #root { height: 100%; }
+
+        .app-shell {
+            height: 100%;
+            display: grid;
+            grid-template-columns: 240px 1fr;
+        }
+
+        .side-nav {
+            background: var(--surface);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            min-width: 240px;
+        }
+
+        .side-nav__brand {
+            padding: 16px 14px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .brand-title {
+            font-size: 15px;
+            font-weight: 600;
+            letter-spacing: 0.2px;
+        }
+
+        .brand-subtitle {
+            margin-top: 4px;
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .nav {
+            padding: 10px 6px;
+            display: grid;
+            gap: 2px;
+        }
+
+        .nav-item {
+            width: 100%;
+            background: transparent;
+            border: 1px solid transparent;
+            color: var(--text);
+            display: grid;
+            grid-template-columns: 28px 1fr;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 10px;
+            border-radius: var(--radius);
+            cursor: pointer;
+            text-align: left;
+            transition: background var(--transition), border-color var(--transition);
+        }
+
+        .nav-item:hover {
+            background: rgba(59, 130, 246, 0.08);
+            border-color: rgba(59, 130, 246, 0.25);
+        }
+
+        .nav-item.active {
+            background: rgba(59, 130, 246, 0.12);
+            border-color: rgba(59, 130, 246, 0.45);
+        }
+
+        .nav-icon {
+            width: 22px;
+            height: 22px;
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            display: grid;
+            place-items: center;
+            font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 11px;
+            color: var(--muted);
+            background: var(--surface-2);
+        }
+
+        .side-nav__footer {
+            margin-top: auto;
+            padding: 12px 14px;
+            border-top: 1px solid var(--border);
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .app-main {
+            height: 100%;
+            display: grid;
+            grid-template-rows: 48px 1fr;
+            min-width: 0;
+        }
+
+        .topbar {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 14px;
+            gap: 12px;
+        }
+
+        .topbar-left { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+        .page-title { font-size: 16px; font-weight: 600; white-space: nowrap; }
+        .page-meta { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        .topbar-right { display: flex; align-items: center; gap: 10px; }
+
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--surface-2);
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--muted-2);
+        }
+
+        .dot.ok { background: var(--ok); }
+        .dot.err { background: var(--err); }
+        .dot.warn { background: var(--warn); }
+
+        .content {
+            overflow: auto;
+            padding: 14px;
+        }
+
+        .panel {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+        }
+
+        .panel-header {
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .panel-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .panel-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .panel-body { padding: 0; }
+
+        .toolbar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .search-box { width: 360px; max-width: 45vw; }
+
+        .search-box input,
+        .form-input, .form-select, .form-textarea {
+            width: 100%;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 9px 10px;
+            border-radius: var(--radius);
+            font-size: 14px;
+            transition: border-color var(--transition);
+        }
+
+        .search-box input::placeholder,
+        .form-input::placeholder, .form-textarea::placeholder { color: var(--muted-2); }
+
+        .search-box input:focus,
+        .form-input:focus, .form-select:focus, .form-textarea:focus {
+            outline: none;
+            border-color: rgba(59, 130, 246, 0.7);
+        }
+
+        .btn {
+            padding: 9px 12px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            background: var(--surface-2);
+            color: var(--text);
+            transition: background var(--transition), border-color var(--transition);
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            white-space: nowrap;
+        }
+
+        .btn:hover { border-color: rgba(59, 130, 246, 0.45); background: rgba(59, 130, 246, 0.08); }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+        .btn-primary {
+            background: rgba(59, 130, 246, 0.16);
+            border-color: rgba(59, 130, 246, 0.55);
+        }
+
+        .btn-danger {
+            background: rgba(239, 68, 68, 0.12);
+            border-color: rgba(239, 68, 68, 0.45);
+        }
+
+        .btn-danger:hover {
+            background: rgba(239, 68, 68, 0.16);
+            border-color: rgba(239, 68, 68, 0.65);
+        }
+
+        .btn-sm { padding: 7px 10px; font-size: 12px; }
+
+        .data-table-wrap { overflow: auto; }
+
+        table.data-table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            font-size: 13px;
+        }
+
+        .data-table thead th {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            background: var(--surface);
+            color: var(--muted);
+            text-transform: none;
+            font-weight: 600;
+            border-bottom: 1px solid var(--border);
+            padding: 10px 12px;
+            text-align: left;
+            white-space: nowrap;
+        }
+
+        .data-table tbody td {
+            border-bottom: 1px solid var(--border);
+            padding: 10px 12px;
+            vertical-align: middle;
+            color: var(--text);
+        }
+
+        .data-table tbody tr:nth-child(2n) td { background: rgba(255, 255, 255, 0.02); }
+        .data-table tbody tr:hover td { background: rgba(59, 130, 246, 0.06); }
+
+        .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+        .status-inline {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--muted);
+        }
+
+        .status-inline .dot { width: 7px; height: 7px; }
+        .status-inline.ok { color: var(--text); }
+        .status-inline.ok .dot { background: var(--ok); }
+        .status-inline.off { color: var(--muted); }
+        .status-inline.off .dot { background: var(--muted-2); }
+
+        .proto {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 8px;
+            border-radius: var(--radius);
+            border: 1px solid var(--border);
+            color: var(--muted);
+            background: var(--surface-2);
+            font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12px;
+        }
+
+        .proto.modbus { border-color: rgba(59, 130, 246, 0.45); color: rgba(59, 130, 246, 0.95); }
+        .proto.opcua { border-color: rgba(245, 158, 11, 0.45); color: rgba(245, 158, 11, 0.95); }
+        .proto.s7 { border-color: rgba(34, 197, 94, 0.45); color: rgba(34, 197, 94, 0.95); }
+
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.65);
+            display: grid;
+            place-items: center;
+            z-index: 1000;
+            padding: 14px;
+        }
+
+        .modal {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            width: min(920px, 100%);
+            max-height: 92vh;
+            overflow: auto;
+        }
+
+        .modal-header {
+            padding: 12px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-title { font-size: 16px; font-weight: 600; }
+
+        .modal-body { padding: 12px; }
+
+        .modal-footer {
+            padding: 12px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+
+        .form-group { margin-bottom: 12px; }
+        .form-label {
+            display: block;
+            margin-bottom: 6px;
+            font-weight: 600;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .form-textarea { resize: vertical; min-height: 80px; }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .form-checkbox {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: var(--text);
+        }
+
+        .form-checkbox input { width: 16px; height: 16px; }
+
+        .tag-list { margin-top: 10px; }
+
+        .tag-item {
+            background: transparent;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+
+        .tag-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .tag-name { font-weight: 600; color: var(--text); }
+
+        .alert {
+            padding: 10px 10px;
+            border-radius: var(--radius);
+            margin-bottom: 10px;
+            font-size: 13px;
+            border: 1px solid var(--border);
+        }
+
+        .alert-success { border-color: rgba(34, 197, 94, 0.45); color: rgba(34, 197, 94, 0.95); background: rgba(34, 197, 94, 0.06); }
+        .alert-error { border-color: rgba(239, 68, 68, 0.45); color: rgba(239, 68, 68, 0.95); background: rgba(239, 68, 68, 0.06); }
+
+        .empty-state, .loading {
+            padding: 18px 12px;
+            color: var(--muted);
+        }
+
+        .empty-state h3 {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text);
+            margin-bottom: 6px;
+        }
+
+        .spinner {
+            width: 18px;
+            height: 18px;
+            border: 2px solid rgba(255, 255, 255, 0.12);
+            border-top-color: rgba(59, 130, 246, 0.9);
+            border-radius: 50%;
+            animation: spin 800ms linear infinite;
+            display: inline-block;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .tab {
+            padding: 10px 12px;
+            background: transparent;
+            border: 1px solid transparent;
+            border-bottom: 2px solid transparent;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--muted);
+            transition: color var(--transition), border-color var(--transition);
+        }
+
+        .tab:hover { color: var(--text); }
+
+        .tab.active {
+            color: var(--text);
+            border-bottom-color: rgba(59, 130, 246, 0.8);
+        }
+
+        @media (max-width: 980px) {
+            body { overflow: auto; }
+            .app-shell { grid-template-columns: 1fr; }
+            .side-nav { display: none; }
+            .app-main { grid-template-rows: 48px 1fr; }
+            .content { padding: 10px; }
+            .search-box { width: 100%; max-width: none; }
+            .form-row { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+        
+        // API Service
+        const api = {
+            async getDevices() {
+                const res = await fetch('/api/devices');
+                if (!res.ok) throw new Error('Failed to fetch devices');
+                return res.json();
+            },
+
+            async getTopicsOverview() {
+                const res = await fetch('/api/topics');
+                if (!res.ok) {
+                    const error = await res.text();
+                    throw new Error(error || 'Failed to fetch topics');
+                }
+                return res.json();
+            },
+
+            async listLogContainers() {
+                const res = await fetch('/api/logs/containers');
+                if (!res.ok) {
+                    const error = await res.text();
+                    throw new Error(error || 'Failed to list containers');
+                }
+                return res.json();
+            },
+
+            async getLogs(container, tail = 300) {
+                const url = `/api/logs?container=${encodeURIComponent(container)}&tail=${encodeURIComponent(tail)}`;
+                const res = await fetch(url);
+                if (!res.ok) {
+                    const error = await res.text();
+                    throw new Error(error || 'Failed to fetch logs');
+                }
+                return res.json();
+            },
+            
+            async createDevice(device) {
+                const res = await fetch('/api/devices', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(device)
+                });
+                if (!res.ok) {
+                    const error = await res.text();
+                    throw new Error(error || 'Failed to create device');
+                }
+                return res.json();
+            },
+            
+            async updateDevice(device) {
+                const res = await fetch('/api/devices', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(device)
+                });
+                if (!res.ok) {
+                    const error = await res.text();
+                    throw new Error(error || 'Failed to update device');
+                }
+                return res.json();
+            },
+            
+            async deleteDevice(id) {
+                const res = await fetch(`/api/devices?id=${id}`, {
+                    method: 'DELETE'
+                });
+                if (!res.ok) throw new Error('Failed to delete device');
+                return res.json();
+            },
+            
+            async testConnection(device) {
+                const res = await fetch('/api/test-connection', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(device)
+                });
+                if (!res.ok) {
+                    const error = await res.text();
+                    throw new Error(error || 'Connection test failed');
+                }
+                return res.json();
+            }
+        };
+        
+        // Device Card Component
+        function DeviceCard({ device, onEdit, onDelete }) {
+            const protocolClass = `protocol-${device.protocol.replace('_', '-')}`;
+            
+            return (
+                <div className={`device-card ${!device.enabled ? 'disabled' : ''}`}>
+                    <div className="device-header">
+                        <div className="device-title">
+                            <div className="device-name">{device.name}</div>
+                            <div className="device-id">{device.id}</div>
+                        </div>
+                        <span className={`protocol-badge ${protocolClass}`}>
+                            {device.protocol}
+                        </span>
+                    </div>
+                    
+                    <div className="device-info">
+                        <div className="info-row">
+                            <span className="info-label">Host:</span>
+                            <span className="info-value">{device.connection.host}:{device.connection.port}</span>
+                        </div>
+                        <div className="info-row">
+                            <span className="info-label">Tags:</span>
+                            <span className="info-value">{device.tags.length}</span>
+                        </div>
+                        <div className="info-row">
+                            <span className="info-label">Poll Interval:</span>
+                            <span className="info-value">{formatDuration(device.poll_interval)}</span>
+                        </div>
+                        <div className="info-row">
+                            <span className="info-label">Status:</span>
+                            <span className="info-value">{device.enabled ? '✓ Enabled' : '✗ Disabled'}</span>
+                        </div>
+                    </div>
+                    
+                    {device.description && (
+                        <p style={{ fontSize: '0.85rem', color: '#666', marginBottom: '12px' }}>
+                            {device.description}
+                        </p>
+                    )}
+                    
+                    <div className="device-actions">
+                        <button className="btn btn-sm btn-secondary" onClick={() => onEdit(device)}>
+                            Edit
+                        </button>
+                        <button className="btn btn-sm btn-danger" onClick={() => onDelete(device.id)}>
+                            Delete
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
+        function protocolGroup(protocol) {
+            const p = (protocol || '').toLowerCase();
+            if (p.includes('modbus')) return 'modbus';
+            if (p.includes('opc')) return 'opcua';
+            if (p.includes('s7')) return 's7';
+            return 'generic';
+        }
+
+        function DeviceTable({ devices, onEdit, onDelete }) {
+            return (
+                <div className="data-table-wrap">
+                    <table className="data-table" role="grid">
+                        <thead>
+                            <tr>
+                                <th style={{ width: '22%' }}>Name</th>
+                                <th style={{ width: '16%' }}>ID</th>
+                                <th style={{ width: '12%' }}>Protocol</th>
+                                <th style={{ width: '18%' }}>Connection</th>
+                                <th style={{ width: '8%' }}>Tags</th>
+                                <th style={{ width: '10%' }}>Poll</th>
+                                <th style={{ width: '8%' }}>State</th>
+                                <th style={{ width: '6%' }}></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {devices.map(device => (
+                                <tr key={device.id}>
+                                    <td>{device.name}</td>
+                                    <td className="mono">{device.id}</td>
+                                    <td>
+                                        <span className={`proto ${protocolGroup(device.protocol)}`}>{device.protocol}</span>
+                                    </td>
+                                    <td className="mono">{device.connection?.host}:{device.connection?.port}</td>
+                                    <td className="mono">{device.tags?.length ?? 0}</td>
+                                    <td className="mono">{formatDuration(device.poll_interval)}</td>
+                                    <td>
+                                        {device.enabled ? (
+                                            <span className="status-inline ok"><span className="dot ok" />Enabled</span>
+                                        ) : (
+                                            <span className="status-inline off"><span className="dot" />Disabled</span>
+                                        )}
+                                    </td>
+                                    <td>
+                                        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                                            <button className="btn btn-sm" onClick={() => onEdit(device)}>Edit</button>
+                                            <button className="btn btn-sm btn-danger" onClick={() => onDelete(device.id)}>Delete</button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            );
+        }
+        
+        // Device Form Component
+        function DeviceForm({ device, onSave, onCancel }) {
+            const [formData, setFormData] = useState(device || {
+                id: '',
+                name: '',
+                description: '',
+                protocol: 'modbus-tcp',
+                enabled: true,
+                uns_prefix: '',
+                poll_interval: 1000000000, // 1s in nanoseconds
+                connection: {
+                    host: '',
+                    port: 502,
+                    timeout: 5000000000, // 5s
+                    retry_count: 3,
+                    retry_delay: 100000000, // 100ms
+                    slave_id: 1,
+                },
+                tags: [],
+                metadata: {}
+            });
+            
+            const [currentTab, setCurrentTab] = useState('basic');
+            const [error, setError] = useState('');
+            const [testing, setTesting] = useState(false);
+            
+            const handleChange = (field, value) => {
+                setFormData(prev => ({ ...prev, [field]: value }));
+            };
+            
+            const handleConnectionChange = (field, value) => {
+                setFormData(prev => ({
+                    ...prev,
+                    connection: { ...prev.connection, [field]: value }
+                }));
+            };
+            
+            const handleTagChange = (index, field, value) => {
+                const newTags = [...formData.tags];
+                newTags[index] = { ...newTags[index], [field]: value };
+                setFormData(prev => ({ ...prev, tags: newTags }));
+            };
+            
+            const addTag = () => {
+                const newTag = {
+                    id: `tag-${Date.now()}`,
+                    name: '',
+                    data_type: 'int16',
+                    address: 0,
+                    register_type: 'holding_register',
+                    topic_suffix: '',
+                    enabled: true,
+                    scale_factor: 1,
+                    offset: 0,
+                    register_count: 1,
+                    byte_order: 'big_endian',
+                    access_mode: 'read'
+                };
+                
+                if (formData.protocol === 'opcua') {
+                    newTag.opc_node_id = '';
+                } else if (formData.protocol === 's7') {
+                    newTag.s7_address = '';
+                }
+                
+                setFormData(prev => ({ ...prev, tags: [...prev.tags, newTag] }));
+            };
+            
+            const removeTag = (index) => {
+                setFormData(prev => ({
+                    ...prev,
+                    tags: prev.tags.filter((_, i) => i !== index)
+                }));
+            };
+            
+            const handleTestConnection = async () => {
+                setTesting(true);
+                setError('');
+                try {
+                    await api.testConnection(formData);
+                    alert('Connection test successful!');
+                } catch (err) {
+                    setError(err.message);
+                } finally {
+                    setTesting(false);
+                }
+            };
+            
+            const handleSubmit = async () => {
+                setError('');
+                try {
+                    await onSave(formData);
+                } catch (err) {
+                    setError(err.message);
+                }
+            };
+            
+            return (
+                <div>
+                    <div className="tabs">
+                        <button 
+                            className={`tab ${currentTab === 'basic' ? 'active' : ''}`}
+                            onClick={() => setCurrentTab('basic')}
+                        >
+                            Basic Info
+                        </button>
+                        <button 
+                            className={`tab ${currentTab === 'connection' ? 'active' : ''}`}
+                            onClick={() => setCurrentTab('connection')}
+                        >
+                            Connection
+                        </button>
+                        <button 
+                            className={`tab ${currentTab === 'tags' ? 'active' : ''}`}
+                            onClick={() => setCurrentTab('tags')}
+                        >
+                            Tags ({formData.tags.length})
+                        </button>
+                    </div>
+                    
+                    {error && (
+                        <div className="alert alert-error">{error}</div>
+                    )}
+                    
+                    {currentTab === 'basic' && (
+                        <div>
+                            <div className="form-row">
+                                <div className="form-group">
+                                    <label className="form-label">Device ID *</label>
+                                    <input 
+                                        className="form-input"
+                                        value={formData.id}
+                                        onChange={(e) => handleChange('id', e.target.value)}
+                                        placeholder="device-001"
+                                        disabled={!!device}
+                                    />
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label">Device Name *</label>
+                                    <input 
+                                        className="form-input"
+                                        value={formData.name}
+                                        onChange={(e) => handleChange('name', e.target.value)}
+                                        placeholder="Temperature Sensor"
+                                    />
+                                </div>
+                            </div>
+                            
+                            <div className="form-group">
+                                <label className="form-label">Description</label>
+                                <textarea 
+                                    className="form-textarea"
+                                    value={formData.description}
+                                    onChange={(e) => handleChange('description', e.target.value)}
+                                    placeholder="Optional description..."
+                                />
+                            </div>
+                            
+                            <div className="form-row">
+                                <div className="form-group">
+                                    <label className="form-label">Protocol *</label>
+                                    <select 
+                                        className="form-select"
+                                        value={formData.protocol}
+                                        onChange={(e) => handleChange('protocol', e.target.value)}
+                                    >
+                                        <option value="modbus-tcp">Modbus TCP</option>
+                                        <option value="modbus-rtu">Modbus RTU</option>
+                                        <option value="opcua">OPC UA</option>
+                                        <option value="s7">Siemens S7</option>
+                                    </select>
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label">Poll Interval (seconds) *</label>
+                                    <input 
+                                        className="form-input"
+                                        type="number"
+                                        value={formData.poll_interval / 1000000000}
+                                        onChange={(e) => handleChange('poll_interval', parseFloat(e.target.value) * 1000000000)}
+                                        step="0.1"
+                                        min="0.1"
+                                    />
+                                </div>
+                            </div>
+                            
+                            <div className="form-group">
+                                <label className="form-label">UNS Prefix *</label>
+                                <input 
+                                    className="form-input"
+                                    value={formData.uns_prefix}
+                                    onChange={(e) => handleChange('uns_prefix', e.target.value)}
+                                    placeholder="plant1/area2/device1"
+                                />
+                            </div>
+                            
+                            <div className="form-group">
+                                <label className="form-checkbox">
+                                    <input 
+                                        type="checkbox"
+                                        checked={formData.enabled}
+                                        onChange={(e) => handleChange('enabled', e.target.checked)}
+                                    />
+                                    <span>Device Enabled</span>
+                                </label>
+                            </div>
+                        </div>
+                    )}
+                    
+                    {currentTab === 'connection' && (
+                        <div>
+                            <div className="form-row">
+                                <div className="form-group">
+                                    <label className="form-label">Host *</label>
+                                    <input 
+                                        className="form-input"
+                                        value={formData.connection.host}
+                                        onChange={(e) => handleConnectionChange('host', e.target.value)}
+                                        placeholder="192.168.1.100"
+                                    />
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label">Port *</label>
+                                    <input 
+                                        className="form-input"
+                                        type="number"
+                                        value={formData.connection.port}
+                                        onChange={(e) => handleConnectionChange('port', parseInt(e.target.value))}
+                                    />
+                                </div>
+                            </div>
+                            
+                            {formData.protocol.startsWith('modbus') && (
+                                <div className="form-group">
+                                    <label className="form-label">Slave ID</label>
+                                    <input 
+                                        className="form-input"
+                                        type="number"
+                                        value={formData.connection.slave_id}
+                                        onChange={(e) => handleConnectionChange('slave_id', parseInt(e.target.value))}
+                                        min="1"
+                                        max="247"
+                                    />
+                                </div>
+                            )}
+                            
+                            {formData.protocol === 'opcua' && (
+                                <>
+                                    <div className="form-group">
+                                        <label className="form-label">Endpoint URL (optional)</label>
+                                        <input 
+                                            className="form-input"
+                                            value={formData.connection.opc_endpoint_url || ''}
+                                            onChange={(e) => handleConnectionChange('opc_endpoint_url', e.target.value)}
+                                            placeholder="opc.tcp://192.168.1.100:4840"
+                                        />
+                                    </div>
+                                    <div className="form-row">
+                                        <div className="form-group">
+                                            <label className="form-label">Security Policy</label>
+                                            <select 
+                                                className="form-select"
+                                                value={formData.connection.opc_security_policy || 'None'}
+                                                onChange={(e) => handleConnectionChange('opc_security_policy', e.target.value)}
+                                            >
+                                                <option value="None">None</option>
+                                                <option value="Basic128Rsa15">Basic128Rsa15</option>
+                                                <option value="Basic256">Basic256</option>
+                                                <option value="Basic256Sha256">Basic256Sha256</option>
+                                            </select>
+                                        </div>
+                                        <div className="form-group">
+                                            <label className="form-label">Security Mode</label>
+                                            <select 
+                                                className="form-select"
+                                                value={formData.connection.opc_security_mode || 'None'}
+                                                onChange={(e) => handleConnectionChange('opc_security_mode', e.target.value)}
+                                            >
+                                                <option value="None">None</option>
+                                                <option value="Sign">Sign</option>
+                                                <option value="SignAndEncrypt">SignAndEncrypt</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div className="form-row">
+                                        <div className="form-group">
+                                            <label className="form-label">Username</label>
+                                            <input 
+                                                className="form-input"
+                                                value={formData.connection.opc_username || ''}
+                                                onChange={(e) => handleConnectionChange('opc_username', e.target.value)}
+                                            />
+                                        </div>
+                                        <div className="form-group">
+                                            <label className="form-label">Password</label>
+                                            <input 
+                                                className="form-input"
+                                                type="password"
+                                                value={formData.connection.opc_password || ''}
+                                                onChange={(e) => handleConnectionChange('opc_password', e.target.value)}
+                                            />
+                                        </div>
+                                    </div>
+                                </>
+                            )}
+                            
+                            {formData.protocol === 's7' && (
+                                <div className="form-row">
+                                    <div className="form-group">
+                                        <label className="form-label">Rack</label>
+                                        <input 
+                                            className="form-input"
+                                            type="number"
+                                            value={formData.connection.s7_rack || 0}
+                                            onChange={(e) => handleConnectionChange('s7_rack', parseInt(e.target.value))}
+                                        />
+                                    </div>
+                                    <div className="form-group">
+                                        <label className="form-label">Slot</label>
+                                        <input 
+                                            className="form-input"
+                                            type="number"
+                                            value={formData.connection.s7_slot || 1}
+                                            onChange={(e) => handleConnectionChange('s7_slot', parseInt(e.target.value))}
+                                        />
+                                    </div>
+                                </div>
+                            )}
+                            
+                            <div className="form-row">
+                                <div className="form-group">
+                                    <label className="form-label">Timeout (seconds)</label>
+                                    <input 
+                                        className="form-input"
+                                        type="number"
+                                        value={formData.connection.timeout / 1000000000}
+                                        onChange={(e) => handleConnectionChange('timeout', parseFloat(e.target.value) * 1000000000)}
+                                        step="0.1"
+                                    />
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label">Retry Count</label>
+                                    <input 
+                                        className="form-input"
+                                        type="number"
+                                        value={formData.connection.retry_count}
+                                        onChange={(e) => handleConnectionChange('retry_count', parseInt(e.target.value))}
+                                    />
+                                </div>
+                            </div>
+                            
+                            <div style={{ marginTop: '20px' }}>
+                                <button 
+                                    className="btn btn-secondary"
+                                    onClick={handleTestConnection}
+                                    disabled={testing}
+                                >
+                                    {testing ? 'Testing...' : 'Test Connection'}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                    
+                    {currentTab === 'tags' && (
+                        <div>
+                            <div style={{ marginBottom: '15px' }}>
+                                <button className="btn btn-secondary" onClick={addTag}>
+                                    + Add Tag
+                                </button>
+                            </div>
+                            
+                            {formData.tags.length === 0 ? (
+                                <div className="empty-state">
+                                    <p>No tags configured. Click "Add Tag" to create one.</p>
+                                </div>
+                            ) : (
+                                <div className="tag-list">
+                                    {formData.tags.map((tag, index) => (
+                                        <div key={index} className="tag-item">
+                                            <div className="tag-header">
+                                                <span className="tag-name">Tag #{index + 1}</span>
+                                                <button 
+                                                    className="btn btn-sm btn-danger"
+                                                    onClick={() => removeTag(index)}
+                                                >
+                                                    Remove
+                                                </button>
+                                            </div>
+                                            
+                                            <div className="form-row">
+                                                <div className="form-group">
+                                                    <label className="form-label">Tag ID</label>
+                                                    <input 
+                                                        className="form-input"
+                                                        value={tag.id}
+                                                        onChange={(e) => handleTagChange(index, 'id', e.target.value)}
+                                                    />
+                                                </div>
+                                                <div className="form-group">
+                                                    <label className="form-label">Tag Name</label>
+                                                    <input 
+                                                        className="form-input"
+                                                        value={tag.name}
+                                                        onChange={(e) => handleTagChange(index, 'name', e.target.value)}
+                                                    />
+                                                </div>
+                                            </div>
+                                            
+                                            {formData.protocol.startsWith('modbus') && (
+                                                <>
+                                                    <div className="form-row">
+                                                        <div className="form-group">
+                                                            <label className="form-label">Address</label>
+                                                            <input 
+                                                                className="form-input"
+                                                                type="number"
+                                                                value={tag.address}
+                                                                onChange={(e) => handleTagChange(index, 'address', parseInt(e.target.value))}
+                                                            />
+                                                        </div>
+                                                        <div className="form-group">
+                                                            <label className="form-label">Register Type</label>
+                                                            <select 
+                                                                className="form-select"
+                                                                value={tag.register_type}
+                                                                onChange={(e) => handleTagChange(index, 'register_type', e.target.value)}
+                                                            >
+                                                                <option value="holding_register">Holding Register</option>
+                                                                <option value="input_register">Input Register</option>
+                                                                <option value="coil">Coil</option>
+                                                                <option value="discrete_input">Discrete Input</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                </>
+                                            )}
+                                            
+                                            {formData.protocol === 'opcua' && (
+                                                <div className="form-group">
+                                                    <label className="form-label">Node ID</label>
+                                                    <input 
+                                                        className="form-input"
+                                                        value={tag.opc_node_id || ''}
+                                                        onChange={(e) => handleTagChange(index, 'opc_node_id', e.target.value)}
+                                                        placeholder="ns=2;s=Temperature"
+                                                    />
+                                                </div>
+                                            )}
+                                            
+                                            {formData.protocol === 's7' && (
+                                                <div className="form-group">
+                                                    <label className="form-label">S7 Address</label>
+                                                    <input 
+                                                        className="form-input"
+                                                        value={tag.s7_address || ''}
+                                                        onChange={(e) => handleTagChange(index, 's7_address', e.target.value)}
+                                                        placeholder="DB1.DBW0"
+                                                    />
+                                                </div>
+                                            )}
+                                            
+                                            <div className="form-row">
+                                                <div className="form-group">
+                                                    <label className="form-label">Data Type</label>
+                                                    <select 
+                                                        className="form-select"
+                                                        value={tag.data_type}
+                                                        onChange={(e) => handleTagChange(index, 'data_type', e.target.value)}
+                                                    >
+                                                        <option value="bool">Boolean</option>
+                                                        <option value="int16">Int16</option>
+                                                        <option value="uint16">UInt16</option>
+                                                        <option value="int32">Int32</option>
+                                                        <option value="uint32">UInt32</option>
+                                                        <option value="float32">Float32</option>
+                                                        <option value="float64">Float64</option>
+                                                        <option value="string">String</option>
+                                                    </select>
+                                                </div>
+                                                <div className="form-group">
+                                                    <label className="form-label">Topic Suffix</label>
+                                                    <input 
+                                                        className="form-input"
+                                                        value={tag.topic_suffix}
+                                                        onChange={(e) => handleTagChange(index, 'topic_suffix', e.target.value)}
+                                                        placeholder="temperature"
+                                                    />
+                                                </div>
+                                            </div>
+                                            
+                                            <div className="form-row">
+                                                <div className="form-group">
+                                                    <label className="form-label">Scale Factor</label>
+                                                    <input 
+                                                        className="form-input"
+                                                        type="number"
+                                                        step="0.1"
+                                                        value={tag.scale_factor}
+                                                        onChange={(e) => handleTagChange(index, 'scale_factor', parseFloat(e.target.value))}
+                                                    />
+                                                </div>
+                                                <div className="form-group">
+                                                    <label className="form-label">Unit</label>
+                                                    <input 
+                                                        className="form-input"
+                                                        value={tag.unit || ''}
+                                                        onChange={(e) => handleTagChange(index, 'unit', e.target.value)}
+                                                        placeholder="°C"
+                                                    />
+                                                </div>
+                                            </div>
+                                            
+                                            <div className="form-group">
+                                                <label className="form-checkbox">
+                                                    <input 
+                                                        type="checkbox"
+                                                        checked={tag.enabled}
+                                                        onChange={(e) => handleTagChange(index, 'enabled', e.target.checked)}
+                                                    />
+                                                    <span>Tag Enabled</span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
+                    
+                    <div className="modal-footer">
+                        <button className="btn btn-secondary" onClick={onCancel}>
+                            Cancel
+                        </button>
+                        <button className="btn btn-primary" onClick={handleSubmit}>
+                            Save Device
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+        
+        // Main App Component
+        function App() {
+            const [devices, setDevices] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [searchTerm, setSearchTerm] = useState('');
+            const [showModal, setShowModal] = useState(false);
+            const [editingDevice, setEditingDevice] = useState(null);
+            const [activeSection, setActiveSection] = useState('Devices');
+            const [apiOk, setApiOk] = useState(null);
+
+            const [topicsOverview, setTopicsOverview] = useState(null);
+            const [topicsLoading, setTopicsLoading] = useState(false);
+            const [topicsError, setTopicsError] = useState('');
+
+            const [containers, setContainers] = useState([]);
+            const [selectedContainer, setSelectedContainer] = useState('');
+            const [logsTail, setLogsTail] = useState(300);
+            const [logsEntries, setLogsEntries] = useState([]);
+            const [logsLoading, setLogsLoading] = useState(false);
+            const [logsError, setLogsError] = useState('');
+            
+            useEffect(() => {
+                loadDevices();
+            }, []);
+
+            useEffect(() => {
+                if (activeSection === 'Topics / Routes') {
+                    loadTopicsOverview();
+                }
+                if (activeSection === 'Logs') {
+                    loadContainers();
+                }
+            }, [activeSection]);
+
+            useEffect(() => {
+                if (activeSection === 'Logs' && selectedContainer) {
+                    loadLogs(selectedContainer, logsTail);
+                }
+            }, [selectedContainer]);
+            
+            const loadDevices = async () => {
+                try {
+                    const data = await api.getDevices();
+                    setDevices(data || []);
+                    setApiOk(true);
+                } catch (err) {
+                    console.error('Failed to load devices:', err);
+                    setApiOk(false);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const loadTopicsOverview = async () => {
+                setTopicsLoading(true);
+                setTopicsError('');
+                try {
+                    const data = await api.getTopicsOverview();
+                    setTopicsOverview(data);
+                } catch (err) {
+                    setTopicsError(err.message || 'Failed to load topics');
+                    setTopicsOverview(null);
+                } finally {
+                    setTopicsLoading(false);
+                }
+            };
+
+            const loadContainers = async () => {
+                setLogsError('');
+                try {
+                    const data = await api.listLogContainers();
+                    const list = (data && data.containers) ? data.containers : [];
+                    setContainers(list);
+                    if (!selectedContainer && list.length > 0) {
+                        setSelectedContainer(list[0]);
+                    }
+                } catch (err) {
+                    setContainers([]);
+                    setLogsEntries([]);
+                    setLogsError(err.message || 'Failed to list containers');
+                }
+            };
+
+            const loadLogs = async (container, tail) => {
+                setLogsLoading(true);
+                setLogsError('');
+                try {
+                    const data = await api.getLogs(container, tail);
+                    setLogsEntries((data && data.entries) ? data.entries : []);
+                } catch (err) {
+                    setLogsEntries([]);
+                    setLogsError(err.message || 'Failed to load logs');
+                } finally {
+                    setLogsLoading(false);
+                }
+            };
+            
+            const handleCreateDevice = () => {
+                setEditingDevice(null);
+                setShowModal(true);
+            };
+            
+            const handleEditDevice = (device) => {
+                setEditingDevice(device);
+                setShowModal(true);
+            };
+            
+            const handleSaveDevice = async (device) => {
+                try {
+                    if (editingDevice) {
+                        await api.updateDevice(device);
+                    } else {
+                        await api.createDevice(device);
+                    }
+                    setShowModal(false);
+                    await loadDevices();
+                } catch (err) {
+                    throw err; // Re-throw to be caught by form
+                }
+            };
+            
+            const handleDeleteDevice = async (id) => {
+                if (!confirm('Are you sure you want to delete this device?')) {
+                    return;
+                }
+                
+                try {
+                    await api.deleteDevice(id);
+                    await loadDevices();
+                } catch (err) {
+                    alert('Failed to delete device: ' + err.message);
+                }
+            };
+            
+            const filteredDevices = devices.filter(device => {
+                const search = searchTerm.toLowerCase();
+                return device.name.toLowerCase().includes(search) ||
+                       device.id.toLowerCase().includes(search) ||
+                       device.protocol.toLowerCase().includes(search);
+            });
+            
+            const stats = {
+                total: devices.length,
+                enabled: devices.filter(d => d.enabled).length,
+                protocols: [...new Set(devices.map(d => d.protocol))].length
+            };
+
+            const navItems = useMemo(() => ([
+                { key: 'Overview', icon: 'OV' },
+                { key: 'Connections', icon: 'CN' },
+                { key: 'Protocols', icon: 'PR' },
+                { key: 'Topics / Routes', icon: 'TP' },
+                { key: 'Devices', icon: 'DV' },
+                { key: 'Logs', icon: 'LG' },
+                { key: 'Configuration', icon: 'CF' },
+                { key: 'System', icon: 'SY' }
+            ]), []);
+
+            const apiText = apiOk === null ? 'API: unknown' : (apiOk ? 'API: OK' : 'API: error');
+            
+            return (
+                <div className="app-shell">
+                    <aside className="side-nav" aria-label="Primary">
+                        <div className="side-nav__brand">
+                            <div className="brand-title">Connector Gateway</div>
+                            <div className="brand-subtitle">Engineering Console</div>
+                        </div>
+                        <nav className="nav">
+                            {navItems.map(item => (
+                                <button
+                                    key={item.key}
+                                    className={`nav-item ${activeSection === item.key ? 'active' : ''}`}
+                                    onClick={() => setActiveSection(item.key)}
+                                >
+                                    <span className="nav-icon" aria-hidden="true">{item.icon}</span>
+                                    <span>{item.key}</span>
+                                </button>
+                            ))}
+                        </nav>
+                        <div className="side-nav__footer">
+                            Dark UI • Industrial theme
+                        </div>
+                    </aside>
+
+                    <div className="app-main">
+                        <header className="topbar" role="banner">
+                            <div className="topbar-left">
+                                <div className="page-title">{activeSection}</div>
+                                <div className="page-meta">
+                                    {activeSection === 'Devices'
+                                        ? `${stats.total} devices • ${stats.enabled} enabled • ${stats.protocols} protocols`
+                                        : 'Connector Gateway runtime view'}
+                                </div>
+                            </div>
+                            <div className="topbar-right">
+                                <span className="status-pill" title="Reachability based on /api/devices">
+                                    <span className={`dot ${apiOk === null ? '' : (apiOk ? 'ok' : 'err')}`} />
+                                    <span>{apiText}</span>
+                                </span>
+                                <button className="btn btn-sm" onClick={loadDevices} disabled={loading}>
+                                    {loading ? (<span className="spinner" aria-hidden="true"></span>) : null}
+                                    Refresh
+                                </button>
+                            </div>
+                        </header>
+
+                        <main className="content" role="main">
+                            {activeSection === 'Overview' && (
+                                <div className="panel">
+                                    <div className="panel-header">
+                                        <div className="panel-title">Gateway Overview</div>
+                                    </div>
+                                    <div className="panel-body">
+                                        <div style={{ padding: '12px' }}>
+                                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px' }}>
+                                                <div className="panel" style={{ padding: '12px' }}>
+                                                    <div style={{ color: 'var(--muted)', fontSize: '12px', marginBottom: '6px' }}>Devices</div>
+                                                    <div style={{ fontSize: '18px', fontWeight: 600 }} className="mono">{stats.total}</div>
+                                                </div>
+                                                <div className="panel" style={{ padding: '12px' }}>
+                                                    <div style={{ color: 'var(--muted)', fontSize: '12px', marginBottom: '6px' }}>Enabled</div>
+                                                    <div style={{ fontSize: '18px', fontWeight: 600 }} className="mono">{stats.enabled}</div>
+                                                </div>
+                                                <div className="panel" style={{ padding: '12px' }}>
+                                                    <div style={{ color: 'var(--muted)', fontSize: '12px', marginBottom: '6px' }}>Protocols</div>
+                                                    <div style={{ fontSize: '18px', fontWeight: 600 }} className="mono">{stats.protocols}</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {activeSection === 'Devices' && (
+                                <div className="panel">
+                                    <div className="panel-header">
+                                        <div className="panel-title">Devices</div>
+                                        <div className="panel-actions">
+                                            <div className="search-box">
+                                                <input
+                                                    type="text"
+                                                    placeholder="Search by name, ID, or protocol"
+                                                    value={searchTerm}
+                                                    onChange={(e) => setSearchTerm(e.target.value)}
+                                                />
+                                            </div>
+                                            <button className="btn btn-primary" onClick={handleCreateDevice}>
+                                                Add Device
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <div className="panel-body">
+                                        {loading ? (
+                                            <div className="loading" style={{ padding: '12px' }}>
+                                                <span className="spinner" aria-hidden="true"></span>
+                                                <span style={{ marginLeft: '10px' }}>Loading devices…</span>
+                                            </div>
+                                        ) : filteredDevices.length === 0 ? (
+                                            <div className="empty-state" style={{ padding: '12px' }}>
+                                                <h3>No devices</h3>
+                                                <div style={{ marginTop: '6px' }}>Add a device to start polling and publishing.</div>
+                                                <div style={{ marginTop: '12px' }}>
+                                                    <button className="btn btn-primary" onClick={handleCreateDevice}>Add Device</button>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <DeviceTable
+                                                devices={filteredDevices}
+                                                onEdit={handleEditDevice}
+                                                onDelete={handleDeleteDevice}
+                                            />
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+
+                            {activeSection === 'Logs' && (
+                                <div className="panel">
+                                    <div className="panel-header">
+                                        <div className="panel-title">Logs</div>
+                                        <div className="panel-actions">
+                                            <div className="toolbar">
+                                                <div style={{ width: 260 }}>
+                                                    <select
+                                                        className="form-select"
+                                                        value={selectedContainer}
+                                                        onChange={(e) => setSelectedContainer(e.target.value)}
+                                                        disabled={containers.length === 0}
+                                                    >
+                                                        {containers.length === 0 ? (
+                                                            <option value="">No containers</option>
+                                                        ) : (
+                                                            containers.map(name => (
+                                                                <option key={name} value={name}>{name}</option>
+                                                            ))
+                                                        )}
+                                                    </select>
+                                                </div>
+                                                <div style={{ width: 110 }}>
+                                                    <input
+                                                        className="form-input"
+                                                        type="number"
+                                                        min="1"
+                                                        max="5000"
+                                                        value={logsTail}
+                                                        onChange={(e) => {
+                                                            const next = parseInt(e.target.value || '300', 10);
+                                                            setLogsTail(Number.isFinite(next) ? next : 300);
+                                                        }}
+                                                    />
+                                                </div>
+                                                <button
+                                                    className="btn btn-sm"
+                                                    onClick={() => selectedContainer ? loadLogs(selectedContainer, logsTail) : null}
+                                                    disabled={!selectedContainer || logsLoading}
+                                                >
+                                                    {logsLoading ? (<span className="spinner" aria-hidden="true"></span>) : null}
+                                                    Refresh
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="panel-body">
+                                        {logsError ? (
+                                            <div style={{ padding: '12px', color: 'var(--err)' }}>
+                                                {logsError}
+                                                <div style={{ marginTop: '8px', color: 'var(--muted)' }}>
+                                                    Note: Container logs require the gateway process to have access to the Docker engine (e.g. running on the host with docker installed).
+                                                </div>
+                                            </div>
+                                        ) : null}
+
+                                        <div className="data-table-wrap" style={{ maxHeight: '60vh' }}>
+                                            <table className="data-table" aria-label="Log Viewer">
+                                                <thead>
+                                                    <tr>
+                                                        <th style={{ width: '18%' }}>Timestamp</th>
+                                                        <th style={{ width: '10%' }}>Level</th>
+                                                        <th style={{ width: '18%' }}>Source</th>
+                                                        <th>Message</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {(logsEntries || []).length === 0 ? (
+                                                        <tr>
+                                                            <td className="mono">—</td>
+                                                            <td className="mono">—</td>
+                                                            <td className="mono">—</td>
+                                                            <td style={{ color: 'var(--muted)' }}>No log entries.</td>
+                                                        </tr>
+                                                    ) : (
+                                                        (logsEntries || []).map((e, idx) => (
+                                                            <tr key={idx}>
+                                                                <td className="mono">{e.timestamp || '—'}</td>
+                                                                <td className="mono">{e.level || '—'}</td>
+                                                                <td className="mono">{e.source || '—'}</td>
+                                                                <td className="mono" style={{ whiteSpace: 'pre-wrap' }}>{e.message || e.raw || '—'}</td>
+                                                            </tr>
+                                                        ))
+                                                    )}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {activeSection === 'Topics / Routes' && (
+                                <div className="panel">
+                                    <div className="panel-header">
+                                        <div className="panel-title">Topics / Routes</div>
+                                        <div className="panel-actions">
+                                            <button className="btn btn-sm" onClick={loadTopicsOverview} disabled={topicsLoading}>
+                                                {topicsLoading ? (<span className="spinner" aria-hidden="true"></span>) : null}
+                                                Refresh
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div className="panel-body">
+                                        {topicsError ? (
+                                            <div style={{ padding: '12px', color: 'var(--err)' }}>{topicsError}</div>
+                                        ) : null}
+
+                                        <div style={{ padding: '12px', borderBottom: '1px solid var(--border)' }}>
+                                            <div style={{ color: 'var(--muted)', fontSize: '12px', marginBottom: '6px' }}>Subscriptions</div>
+                                            <div className="mono" style={{ display: 'grid', gap: '4px' }}>
+                                                {(topicsOverview && topicsOverview.subscriptions && topicsOverview.subscriptions.length > 0)
+                                                    ? topicsOverview.subscriptions.map((t) => (<div key={t}>{t}</div>))
+                                                    : (<div style={{ color: 'var(--muted)' }}>No subscription patterns reported.</div>)}
+                                            </div>
+                                        </div>
+
+                                        <div style={{ padding: '12px' }}>
+                                            <div style={{ color: 'var(--muted)', fontSize: '12px', marginBottom: '6px' }}>Active Topics (recent publishes)</div>
+                                            <div className="data-table-wrap" style={{ maxHeight: '28vh', marginBottom: '12px' }}>
+                                                <table className="data-table" aria-label="Active Topics">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>Topic</th>
+                                                            <th style={{ width: '10%' }}>Count</th>
+                                                            <th style={{ width: '22%' }}>Last Published</th>
+                                                            <th style={{ width: '14%' }}>Bytes</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        {(!topicsOverview || !topicsOverview.active_topics || topicsOverview.active_topics.length === 0) ? (
+                                                            <tr>
+                                                                <td className="mono">—</td>
+                                                                <td className="mono">—</td>
+                                                                <td className="mono">—</td>
+                                                                <td className="mono">—</td>
+                                                            </tr>
+                                                        ) : (
+                                                            topicsOverview.active_topics.map((t) => (
+                                                                <tr key={t.topic}>
+                                                                    <td className="mono">{t.topic}</td>
+                                                                    <td className="mono">{t.count}</td>
+                                                                    <td className="mono">{t.last_published}</td>
+                                                                    <td className="mono">{t.last_payload_bytes}</td>
+                                                                </tr>
+                                                            ))
+                                                        )}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+
+                                            <div style={{ color: 'var(--muted)', fontSize: '12px', marginBottom: '6px' }}>Configured Routes</div>
+                                            <div className="data-table-wrap" style={{ maxHeight: '34vh' }}>
+                                                <table className="data-table" aria-label="Configured Routes">
+                                                    <thead>
+                                                        <tr>
+                                                            <th style={{ width: '16%' }}>Device</th>
+                                                            <th style={{ width: '14%' }}>Tag</th>
+                                                            <th>Topic</th>
+                                                            <th style={{ width: '10%' }}>Enabled</th>
+                                                            <th style={{ width: '10%' }}>Access</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        {(!topicsOverview || !topicsOverview.routes || topicsOverview.routes.length === 0) ? (
+                                                            <tr>
+                                                                <td className="mono">—</td>
+                                                                <td className="mono">—</td>
+                                                                <td className="mono">—</td>
+                                                                <td className="mono">—</td>
+                                                                <td className="mono">—</td>
+                                                            </tr>
+                                                        ) : (
+                                                            topicsOverview.routes.map((r, idx) => (
+                                                                <tr key={`${r.device_id}-${r.tag_id}-${idx}`}>
+                                                                    <td className="mono">{r.device_id}</td>
+                                                                    <td className="mono">{r.tag_id}</td>
+                                                                    <td className="mono">{r.full_topic}</td>
+                                                                    <td className="mono">{r.enabled ? 'yes' : 'no'}</td>
+                                                                    <td className="mono">{r.access_mode || '—'}</td>
+                                                                </tr>
+                                                            ))
+                                                        )}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {activeSection !== 'Devices' && activeSection !== 'Overview' && activeSection !== 'Logs' && activeSection !== 'Topics / Routes' && (
+                                <div className="panel">
+                                    <div className="panel-header">
+                                        <div className="panel-title">{activeSection}</div>
+                                    </div>
+                                    <div className="panel-body">
+                                        <div style={{ padding: '12px', color: 'var(--muted)' }}>
+                                            This section is a UI stub. If you tell me what runtime/system data you want surfaced here, I’ll wire it to the backend.
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </main>
+                    </div>
+                    
+                    {showModal && (
+                        <div className="modal-overlay" onClick={() => setShowModal(false)}>
+                            <div className="modal" onClick={(e) => e.stopPropagation()}>
+                                <div className="modal-header">
+                                    <h2 className="modal-title">
+                                        {editingDevice ? 'Edit Device' : 'Add New Device'}
+                                    </h2>
+                                </div>
+                                <div className="modal-body">
+                                    <DeviceForm 
+                                        device={editingDevice}
+                                        onSave={handleSaveDevice}
+                                        onCancel={() => setShowModal(false)}
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+        
+        // Helper function
+        function formatDuration(nanoseconds) {
+            const seconds = nanoseconds / 1000000000;
+            if (seconds < 1) return `${(seconds * 1000).toFixed(0)}ms`;
+            return `${seconds.toFixed(1)}s`;
+        }
+        
+        // Render app
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>

@@ -1,0 +1,135 @@
+# Docker Compose for Protocol Gateway Development/Testing
+# Includes: EMQX Broker, Protocol Gateway
+#
+# Usage:
+#   docker-compose up -d          # Start all services
+#   docker-compose logs -f        # View logs
+#   docker-compose down           # Stop all services
+#   docker-compose build gateway  # Rebuild gateway after code changes
+
+version: '3.8'
+
+services:
+  # ========================================
+  # EMQX MQTT Broker
+  # ========================================
+  emqx:
+    image: emqx/emqx:5.5
+    container_name: protocol-gateway-emqx
+    environment:
+      - EMQX_NAME=emqx
+      - EMQX_HOST=127.0.0.1
+      - EMQX_ALLOW_ANONYMOUS=true
+      - EMQX_LISTENER__TCP__EXTERNAL=1883
+      - EMQX_DASHBOARD__LISTENER__HTTP__BIND=18083
+    ports:
+      - "1883:1883"       # MQTT TCP
+      - "8083:8083"       # MQTT WebSocket
+      - "8084:8084"       # MQTT WebSocket SSL
+      - "8883:8883"       # MQTT SSL
+      - "18083:18083"     # Dashboard
+    volumes:
+      - emqx-data:/opt/emqx/data
+      - emqx-log:/opt/emqx/log
+    healthcheck:
+      test: ["CMD", "emqx", "ctl", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - protocol-gateway-net
+
+
+  # OPC UA Simulator for testing
+  opcua-simulator:
+    build:
+      context: ./tools/opcua-simulator
+      dockerfile: Dockerfile
+    container_name: nexus-opcua-sim
+    ports:
+      - "4840:4840"
+    environment:
+      - OPCUA_HOST=0.0.0.0
+      - OPCUA_PORT=4840
+      - OPCUA_AUTO_UPDATE=1
+      - OPCUA_UPDATE_MS=500
+    networks:
+      - protocol-gateway-net
+
+  # ========================================
+  # Protocol Gateway
+  # ========================================
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: protocol-gateway
+    depends_on:
+      emqx:
+        condition: service_healthy
+    environment:
+      # MQTT Configuration
+      - MQTT_BROKER_URL=tcp://emqx:1883
+      - MQTT_CLIENT_ID=protocol-gateway-dev
+      - MQTT_USERNAME=
+      - MQTT_PASSWORD=
+      
+      # HTTP Server
+      - HTTP_PORT=8080
+      
+      # Logging
+      - LOG_LEVEL=debug
+      - LOG_FORMAT=console
+      
+      # Device Configuration
+      - DEVICES_CONFIG_PATH=/app/config/devices.yaml
+      
+      # Environment
+      - ENVIRONMENT=development
+    ports:
+      - "8080:8080"     # Web UI, Health & Metrics & API
+    volumes:
+      - ./config/devices.yaml:/app/config/devices.yaml
+      - gateway-data:/app/data
+      # Optional (for Web UI Logs -> per-container logs):
+      # Allows the gateway to call `docker ps` / `docker logs` on the host engine.
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - protocol-gateway-net
+    restart: unless-stopped
+
+  # ========================================
+  # MQTT Explorer (Optional - for debugging)
+  # ========================================
+  mqtt-explorer:
+    image: smeagolworms4/mqtt-explorer:latest
+    container_name: mqtt-explorer
+    depends_on:
+      - emqx
+    ports:
+      - "4000:4000"
+    networks:
+      - protocol-gateway-net
+    profiles:
+      - debug
+
+# ========================================
+# Networks
+# ========================================
+networks:
+  protocol-gateway-net:
+    driver: bridge
+
+# ========================================
+# Volumes
+# ========================================
+volumes:
+  emqx-data:
+  emqx-log:
+  gateway-data:
+

@@ -1,0 +1,69 @@
+version: "1.0"
+devices:
+    - id: SIM
+      name: OPCUA
+      protocol: opcua
+      enabled: false
+      uns_prefix: plant1/area1/line1
+      poll_interval: 5s
+      connection:
+        host: opcua-simulator
+        port: 4840
+        timeout: 5s
+        retry_count: 3
+        retry_delay: 100ms
+        slave_id: 1
+        opc_endpoint_url: opc.tcp://opcua-simulator:4840
+        opc_security_policy: ""
+        opc_security_mode: ""
+        opc_auth_mode: ""
+        opc_username: ""
+        opc_password: ""
+        s7_rack: 0
+        s7_slot: 0
+      tags:
+        - id: tag-1769443985390
+          name: Temp
+          data_type: float32
+          scale_factor: 1
+          unit: °C
+          topic_suffix: temperature
+          enabled: true
+          access_mode: read
+          register_type: holding_register
+          byte_order: big_endian
+          register_count: 1
+          opc_node_id: ns=2;s=Demo.Temperature
+        - id: tag-1769444012598
+          name: Pressure
+          data_type: float32
+          scale_factor: 1
+          topic_suffix: Pressure
+          enabled: true
+          access_mode: read
+          register_type: holding_register
+          byte_order: big_endian
+          register_count: 1
+          opc_node_id: ns=2;s=Demo.Pressure
+        - id: tag-1769444038261
+          name: Status
+          data_type: string
+          scale_factor: 1
+          topic_suffix: Status
+          enabled: true
+          access_mode: read
+          register_type: holding_register
+          byte_order: big_endian
+          register_count: 1
+          opc_node_id: ns=2;s=Demo.Status
+        - id: tag-1769444077413
+          name: Switch
+          data_type: bool
+          scale_factor: 1
+          topic_suffix: Switch
+          enabled: true
+          access_mode: read
+          register_type: holding_register
+          byte_order: big_endian
+          register_count: 1
+          opc_node_id: ns=2;s=Demo.Switch

@@ -1,0 +1,98 @@
+# ============================================
+# Protocol Gateway - Air Configuration
+# ============================================
+# Hot reload for development
+# Install: go install github.com/cosmtrek/air@latest
+# Run: air
+
+root = "."
+testdata_dir = "testdata"
+tmp_dir = "tmp"
+
+[build]
+  # Binary name
+  bin = "./tmp/main"
+  
+  # Build command
+  cmd = "go build -o ./tmp/main ./cmd/gateway"
+  
+  # Delay before rebuild (milliseconds)
+  delay = 1000
+  
+  # Excluded directories
+  exclude_dir = ["assets", "tmp", "vendor", "testdata", "bin"]
+  
+  # Excluded files
+  exclude_file = []
+  
+  # Excluded regex patterns
+  exclude_regex = ["_test.go"]
+  
+  # Excluded unchanged files
+  exclude_unchanged = false
+  
+  # Follow symlinks
+  follow_symlink = false
+  
+  # Full binary path
+  full_bin = ""
+  
+  # Include directories
+  include_dir = []
+  
+  # Include extensions
+  include_ext = ["go", "tpl", "tmpl", "html", "yaml", "yml"]
+  
+  # Include files
+  include_file = []
+  
+  # Kill delay
+  kill_delay = "0s"
+  
+  # Log output
+  log = "build-errors.log"
+  
+  # Poll (use this on Docker or network filesystems)
+  poll = false
+  
+  # Poll interval
+  poll_interval = 0
+  
+  # Rerun on error
+  rerun = false
+  
+  # Rerun delay
+  rerun_delay = 500
+  
+  # Send interrupt signal before kill
+  send_interrupt = false
+  
+  # Stop on error
+  stop_on_error = false
+
+[color]
+  # Customize each part's color
+  app = ""
+  build = "yellow"
+  main = "magenta"
+  runner = "green"
+  watcher = "cyan"
+
+[log]
+  # Log main only
+  main_only = false
+  
+  # Show log time
+  time = false
+
+[misc]
+  # Clean on exit
+  clean_on_exit = false
+
+[screen]
+  # Clear screen on rebuild
+  clear_on_rebuild = true
+  
+  # Keep scroll position
+  keep_scroll = true
+

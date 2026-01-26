@@ -1,0 +1,34 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Test files (not needed in production image)
+*_test.go
+test/
+coverage.out
+coverage.html
+
+# Documentation
+*.md
+!config/*.md
+docs/
+
+# Development configs
+docker-compose*.yaml
+Makefile
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+*.tmp
+*.log
+
