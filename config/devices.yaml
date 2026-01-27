@@ -3,7 +3,7 @@ devices:
     - id: SIM
       name: OPCUA
       protocol: opcua
-      enabled: false
+      enabled: true
       uns_prefix: plant1/area1/line1
       poll_interval: 5s
       connection:
@@ -24,23 +24,23 @@ devices:
       tags:
         - id: tag-1769443985390
           name: Temp
-          data_type: float32
+          data_type: float64
           scale_factor: 1
           unit: °C
           topic_suffix: temperature
           enabled: true
-          access_mode: read
+          access_mode: readwrite
           register_type: holding_register
           byte_order: big_endian
           register_count: 1
           opc_node_id: ns=2;s=Demo.Temperature
         - id: tag-1769444012598
           name: Pressure
-          data_type: float32
+          data_type: float64
           scale_factor: 1
           topic_suffix: Pressure
           enabled: true
-          access_mode: read
+          access_mode: readwrite
           register_type: holding_register
           byte_order: big_endian
           register_count: 1
@@ -51,7 +51,7 @@ devices:
           scale_factor: 1
           topic_suffix: Status
           enabled: true
-          access_mode: read
+          access_mode: readwrite
           register_type: holding_register
           byte_order: big_endian
           register_count: 1
@@ -62,8 +62,9 @@ devices:
           scale_factor: 1
           topic_suffix: Switch
           enabled: true
-          access_mode: read
+          access_mode: readwrite
           register_type: holding_register
           byte_order: big_endian
           register_count: 1
           opc_node_id: ns=2;s=Demo.Switch
+

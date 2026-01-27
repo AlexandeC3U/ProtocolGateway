@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -609,8 +610,8 @@ func (c *Client) writeNode(ctx context.Context, nodeID *ua.NodeID, variant *ua.V
 				NodeID:      nodeID,
 				AttributeID: ua.AttributeIDValue,
 				Value: &ua.DataValue{
-					Value:           variant,
-					SourceTimestamp: time.Now(),
+					EncodingMask: ua.DataValueValue,
+					Value:        variant,
 				},
 			},
 		},
@@ -981,14 +982,40 @@ func toBool(v interface{}) (bool, bool) {
 	switch val := v.(type) {
 	case bool:
 		return val, true
-	case int, int8, int16, int32, int64:
+	case int:
 		return val != 0, true
-	case uint, uint8, uint16, uint32, uint64:
+	case int8:
+		return val != 0, true
+	case int16:
+		return val != 0, true
+	case int32:
+		return val != 0, true
+	case int64:
+		return val != 0, true
+	case uint:
+		return val != 0, true
+	case uint8:
+		return val != 0, true
+	case uint16:
+		return val != 0, true
+	case uint32:
+		return val != 0, true
+	case uint64:
 		return val != 0, true
 	case float32:
 		return val != 0, true
 	case float64:
 		return val != 0, true
+	case string:
+		// Handle common string representations of boolean values
+		switch strings.ToLower(strings.TrimSpace(val)) {
+		case "true", "1", "yes", "on":
+			return true, true
+		case "false", "0", "no", "off":
+			return false, true
+		default:
+			return false, false
+		}
 	default:
 		return false, false
 	}

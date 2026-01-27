@@ -3,9 +3,13 @@ import math
 import os
 import signal
 import time
+import logging
 from typing import Optional
 
 from asyncua import Server, ua
+
+
+logging.basicConfig(level=logging.INFO)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -45,16 +49,51 @@ async def main() -> None:
     # Give variables stable *string* NodeIds that match the gateway config
     # (e.g. ns=2;s=Demo.Temperature). If we let asyncua auto-assign, the
     # variables end up with ids like ns=2;s=Temperature, which won't match.
-    temperature = await demo.add_variable(ua.NodeId("Demo.Temperature", idx), "Temperature", 20.0)
-    pressure = await demo.add_variable(ua.NodeId("Demo.Pressure", idx), "Pressure", 1.2)
-    status = await demo.add_variable(ua.NodeId("Demo.Status", idx), "Status", "OK")
-    switch = await demo.add_variable(ua.NodeId("Demo.Switch", idx), "Switch", False)
+    # NOTE: asyncua infers the stored VariantType from the python value.
+    # Because `bool` is a subclass of `int` in python, relying on inference
+    # can lead to a stored VariantType of Int64, which will then reject real
+    # Boolean writes from other stacks (e.g. gopcua) with BadTypeMismatch.
+    # For interoperability, always pass an explicit `varianttype` here.
+    temperature = await demo.add_variable(
+        ua.NodeId("Demo.Temperature", idx),
+        "Temperature",
+        20.0,
+        varianttype=ua.VariantType.Double,
+    )
+    pressure = await demo.add_variable(
+        ua.NodeId("Demo.Pressure", idx),
+        "Pressure",
+        1.2,
+        varianttype=ua.VariantType.Double,
+    )
+    status = await demo.add_variable(
+        ua.NodeId("Demo.Status", idx),
+        "Status",
+        "OK",
+        varianttype=ua.VariantType.String,
+    )
+    switch = await demo.add_variable(
+        ua.NodeId("Demo.Switch", idx),
+        "Switch",
+        False,
+        varianttype=ua.VariantType.Boolean,
+    )
+
+    # Extra node for diagnosing client write compatibility.
+    write_test = await demo.add_variable(
+        ua.NodeId("Demo.WriteTest", idx),
+        "WriteTest",
+        False,
+        varianttype=ua.VariantType.Boolean,
+    )
 
     # Allow writes from client so you can test gateway write path.
     await temperature.set_writable()
     await pressure.set_writable()
     await status.set_writable()
     await switch.set_writable()
+
+    await write_test.set_writable()
 
     stop_event: asyncio.Event = asyncio.Event()
 
@@ -82,6 +121,7 @@ async def main() -> None:
         print(f"  {pressure.nodeid.to_string()}")
         print(f"  {status.nodeid.to_string()}")
         print(f"  {switch.nodeid.to_string()}")
+        print(f"  {write_test.nodeid.to_string()}")
 
         while not stop_event.is_set():
             t = time.time() - t0
@@ -90,14 +130,14 @@ async def main() -> None:
             # Only auto-update when AUTO_UPDATE=1.
             auto_update = _env_str("OPCUA_AUTO_UPDATE", "1") not in ("0", "false", "False", "no", "NO")
             if auto_update:
-                await temperature.write_value(20.0 + 5.0 * math.sin(t / 3.0))
-                await pressure.write_value(1.2 + 0.2 * math.sin(t / 5.0))
+                await temperature.write_value(20.0 + 5.0 * math.sin(t / 3.0), ua.VariantType.Double)
+                await pressure.write_value(1.2 + 0.2 * math.sin(t / 5.0), ua.VariantType.Double)
 
                 # Flip status occasionally
                 if int(t) % 30 < 15:
-                    await status.write_value("OK")
+                    await status.write_value("OK", ua.VariantType.String)
                 else:
-                    await status.write_value("WARN")
+                    await status.write_value("WARN", ua.VariantType.String)
 
             await asyncio.sleep(max(update_ms, 50) / 1000.0)
 
