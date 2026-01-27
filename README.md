@@ -110,7 +110,33 @@ Example with `mosquitto_sub`:
 ```bash
 mosquitto_sub -h localhost -p 1883 -t 'plant1/#' -v
 ```
+## 5) Testing Write Commands
 
+You can write values to tags using the EMQX dashboard or any MQTT client.
+
+### Using EMQX Dashboard
+
+1. Open the EMQX dashboard: `http://localhost:18083` (default login: `admin` / `public`)
+2. Go to **Diagnose** → **WebSocket Client**
+3. Click **Connect**
+4. To publish a write command:
+   - **Topic**: `$nexus/cmd/{device_id}/{tag_id}/set`
+   - **Payload**: The value to write
+
+### Example: Writing to the Switch tag
+
+- **Topic**: `$nexus/cmd/SIM/tag-1769444077413/set`
+- **Payload**: `true`, `True`, `1`, `false`, `False`, or `0`
+
+For numeric tags, send the value directly (e.g., `25.5` for temperature).
+
+### Write Response
+
+The gateway publishes a response to `$nexus/cmd/{device_id}/{tag_id}/response`:
+
+```json
+{"device_id":"SIM","tag_id":"tag-1769444077413","success":true,"timestamp":"2026-01-27T12:00:00Z","duration_ms":45}
+```
 ## Notes / Troubleshooting
 
 - If you restart the stack and previously created devices don’t show up, ensure the gateway is using the same mounted `config/devices.yaml` (Compose does this by default).
