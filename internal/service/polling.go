@@ -97,6 +97,7 @@ type PollingStats struct {
 type devicePoller struct {
 	device    *domain.Device
 	stopChan  chan struct{}
+	stopOnce  sync.Once
 	running   atomic.Bool
 	lastPoll  time.Time
 	lastError error
@@ -251,7 +252,9 @@ func (s *PollingService) UnregisterDevice(deviceID string) error {
 
 	// Stop the poller
 	if dp.running.Load() {
-		close(dp.stopChan)
+		dp.stopOnce.Do(func() {
+			close(dp.stopChan)
+		})
 	}
 
 	delete(s.devices, deviceID)
@@ -336,12 +339,21 @@ func (s *PollingService) pollDevice(dp *devicePoller) {
 		return
 	}
 
-	// Read all tags from the device using the appropriate protocol
-	// Use device timeout directly (not 2x) for faster failure detection
-	ctx, cancel := context.WithTimeout(s.ctx, dp.device.Connection.Timeout)
-	defer cancel()
+	// Build a lookup map so we can safely assign topics by TagID.
+	// Protocol adapters are not required to preserve slice order (and some don't).
+	tagByID := make(map[string]*domain.Tag, len(tags))
+	for _, tag := range tags {
+		if tag != nil && tag.ID != "" {
+			tagByID[tag.ID] = tag
+		}
+	}
 
-	dataPoints, err := s.protocolManager.ReadTags(ctx, dp.device, tags)
+	// Read all tags from the device using the appropriate protocol.
+	// Use device timeout directly (not 2x) for faster failure detection.
+	readCtx, readCancel := context.WithTimeout(s.ctx, dp.device.Connection.Timeout)
+	defer readCancel()
+
+	dataPoints, err := s.protocolManager.ReadTags(readCtx, dp.device, tags)
 	if err != nil {
 		if errors.Is(err, domain.ErrCircuitBreakerOpen) {
 			// Circuit breaker open means the endpoint is unhealthy; don't spam error logs.
@@ -389,24 +401,35 @@ func (s *PollingService) pollDevice(dp *devicePoller) {
 		dataPointPool.Put(goodPointsPtr)
 	}()
 
-	// Set topics and filter good data points
-	for i, point := range dataPoints {
-		if point != nil {
-			// Set the full topic
-			point.Topic = topicForTag(dp.device.UNSPrefix, tags[i])
+	// Set topics and filter good data points.
+	// Do NOT assume datapoints are aligned with tags by index.
+	for _, point := range dataPoints {
+		if point == nil {
+			continue
+		}
 
-			if point.Quality == domain.QualityGood {
-				goodPoints = append(goodPoints, point)
-			}
+		if tag := tagByID[point.TagID]; tag != nil {
+			point.Topic = topicForTag(dp.device.UNSPrefix, tag)
+		} else if suffix := sanitizeTopicSegment(point.TagID); suffix != "" {
+			point.Topic = dp.device.UNSPrefix + "/" + suffix
+		} else {
+			point.Topic = dp.device.UNSPrefix
+		}
+
+		if point.Quality == domain.QualityGood {
+			goodPoints = append(goodPoints, point)
 		}
 	}
 
 	s.stats.PointsRead.Add(uint64(len(dataPoints)))
 	dp.stats.pointsRead.Add(uint64(len(dataPoints)))
 
-	// Publish good data points
+	// Publish good data points.
+	// Use the service context for publishing so device read timeout doesn't
+	// accidentally cancel publishing when reads consume most of the deadline.
+	publishCtx := s.ctx
 	if len(goodPoints) > 0 {
-		if err := s.publisher.PublishBatch(ctx, goodPoints); err != nil {
+		if err := s.publisher.PublishBatch(publishCtx, goodPoints); err != nil {
 			s.logger.Warn().
 				Err(err).
 				Str("device_id", dp.device.ID).

@@ -22,6 +22,7 @@ type CommandHandler struct {
 	mqttClient      mqtt.Client
 	protocolManager *domain.ProtocolManager
 	devices         map[string]*domain.Device
+	tagByID         map[string]map[string]*domain.Tag // deviceID -> tagID -> Tag (O(1) lookup)
 	devicesMu       sync.RWMutex
 	logger          zerolog.Logger
 	config          CommandConfig
@@ -157,6 +158,7 @@ func NewCommandHandler(
 		mqttClient:      mqttClient,
 		protocolManager: protocolManager,
 		devices:         make(map[string]*domain.Device),
+		tagByID:         make(map[string]map[string]*domain.Tag),
 		logger:          logger.With().Str("component", "command-handler").Logger(),
 		config:          config,
 		stats:           &CommandStats{},
@@ -166,9 +168,10 @@ func NewCommandHandler(
 		commandQueue:    make(chan WriteCommand, config.CommandQueueSize),
 	}
 
-	// Index devices by ID
+	// Index devices and tags by ID for O(1) lookup
 	for _, device := range devices {
 		h.devices[device.ID] = device
+		h.tagByID[device.ID] = buildTagIndex(device)
 	}
 
 	h.logger.Info().
@@ -395,24 +398,21 @@ func (h *CommandHandler) processWriteCommand(cmd WriteCommand) {
 		return
 	}
 
-	// Get device
+	// Get device and tag (O(1) lookups)
 	h.devicesMu.RLock()
 	device, exists := h.devices[cmd.DeviceID]
+	var tag *domain.Tag
+	if exists {
+		if tagMap, ok := h.tagByID[cmd.DeviceID]; ok {
+			tag = tagMap[cmd.TagID]
+		}
+	}
 	h.devicesMu.RUnlock()
 
 	if !exists {
 		h.sendResponse(cmd, false, "device not found", time.Since(startTime))
 		h.stats.CommandsFailed.Add(1)
 		return
-	}
-
-	// Find tag
-	var tag *domain.Tag
-	for i := range device.Tags {
-		if device.Tags[i].ID == cmd.TagID {
-			tag = &device.Tags[i]
-			break
-		}
 	}
 
 	if tag == nil {
@@ -494,8 +494,10 @@ func (h *CommandHandler) UpdateDevices(devices []*domain.Device) {
 	defer h.devicesMu.Unlock()
 
 	h.devices = make(map[string]*domain.Device)
+	h.tagByID = make(map[string]map[string]*domain.Tag)
 	for _, device := range devices {
 		h.devices[device.ID] = device
+		h.tagByID[device.ID] = buildTagIndex(device)
 	}
 
 	h.logger.Info().Int("count", len(devices)).Msg("Updated device list")
@@ -507,6 +509,7 @@ func (h *CommandHandler) AddDevice(device *domain.Device) {
 	defer h.devicesMu.Unlock()
 
 	h.devices[device.ID] = device
+	h.tagByID[device.ID] = buildTagIndex(device)
 	h.logger.Debug().Str("device_id", device.ID).Msg("Added device")
 }
 
@@ -516,7 +519,17 @@ func (h *CommandHandler) RemoveDevice(deviceID string) {
 	defer h.devicesMu.Unlock()
 
 	delete(h.devices, deviceID)
+	delete(h.tagByID, deviceID)
 	h.logger.Debug().Str("device_id", deviceID).Msg("Removed device")
+}
+
+// buildTagIndex creates a map of tagID -> *Tag for O(1) lookup.
+func buildTagIndex(device *domain.Device) map[string]*domain.Tag {
+	tagMap := make(map[string]*domain.Tag, len(device.Tags))
+	for i := range device.Tags {
+		tagMap[device.Tags[i].ID] = &device.Tags[i]
+	}
+	return tagMap
 }
 
 // Stats returns a snapshot of command handling statistics.

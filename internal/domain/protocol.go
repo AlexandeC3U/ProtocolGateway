@@ -3,6 +3,8 @@ package domain
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 )
 
@@ -87,14 +89,14 @@ func (pm *ProtocolManager) Close() error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
-	var lastErr error
+	errList := make([]error, 0, len(pm.pools))
 	for protocol, pool := range pm.pools {
 		if err := pool.Close(); err != nil {
-			lastErr = err
+			errList = append(errList, fmt.Errorf("close %s pool: %w", protocol, err))
 		}
 		delete(pm.pools, protocol)
 	}
-	return lastErr
+	return errors.Join(errList...)
 }
 
 // HealthCheck checks all pools. Thread-safe.

@@ -5,8 +5,11 @@ package modbus
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"math"
+	"math/rand/v2"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -19,16 +22,18 @@ import (
 
 // Client represents a Modbus client connection to a single device.
 type Client struct {
-	config     ClientConfig
-	handler    *modbus.TCPClientHandler
-	client     modbus.Client
-	logger     zerolog.Logger
-	mu         sync.RWMutex
-	connected  atomic.Bool
-	lastError  error
-	lastUsed   time.Time
-	stats      *ClientStats
-	deviceID   string
+	config              ClientConfig
+	handler             *modbus.TCPClientHandler
+	client              modbus.Client
+	logger              zerolog.Logger
+	mu                  sync.RWMutex
+	opMu                sync.Mutex // Serializes all Modbus operations - goburrow client is NOT thread-safe
+	connected           atomic.Bool
+	lastError           error
+	lastUsed            time.Time
+	stats               *ClientStats
+	deviceID            string
+	consecutiveFailures atomic.Int32 // For backoff reset on success
 }
 
 // ClientConfig holds configuration for a Modbus client.
@@ -277,6 +282,7 @@ func (c *Client) ReadTags(ctx context.Context, tags []*domain.Tag) ([]*domain.Da
 }
 
 // readRegisters performs the actual Modbus read operation.
+// Uses opMu to serialize operations - goburrow/modbus Client is NOT thread-safe.
 func (c *Client) readRegisters(tag *domain.Tag) ([]byte, error) {
 	c.mu.RLock()
 	client := c.client
@@ -285,6 +291,10 @@ func (c *Client) readRegisters(tag *domain.Tag) ([]byte, error) {
 	if client == nil {
 		return nil, domain.ErrConnectionClosed
 	}
+
+	// Serialize all Modbus operations to prevent protocol corruption
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
 
 	var result []byte
 	var err error
@@ -303,9 +313,11 @@ func (c *Client) readRegisters(tag *domain.Tag) ([]byte, error) {
 	}
 
 	if err != nil {
+		c.consecutiveFailures.Add(1)
 		return nil, c.translateModbusError(err)
 	}
 
+	c.consecutiveFailures.Store(0) // Reset on success
 	return result, nil
 }
 
@@ -316,8 +328,8 @@ func (c *Client) parseValue(data []byte, tag *domain.Tag) (interface{}, error) {
 	}
 
 	// Handle coil/discrete input (boolean) values
-	if tag.RegisterType == domain.RegisterTypeCoil || 
-	   tag.RegisterType == domain.RegisterTypeDiscreteInput {
+	if tag.RegisterType == domain.RegisterTypeCoil ||
+		tag.RegisterType == domain.RegisterTypeDiscreteInput {
 		if tag.BitPosition != nil {
 			return (data[0] & (1 << *tag.BitPosition)) != 0, nil
 		}
@@ -461,8 +473,220 @@ func (c *Client) groupTagsByType(tags []*domain.Tag) [][]*domain.Tag {
 	return result
 }
 
-// readTagGroup reads a group of tags of the same register type.
+// RegisterRange represents a contiguous range of registers to read in one operation.
+type RegisterRange struct {
+	StartAddress uint16
+	EndAddress   uint16        // Inclusive end address
+	Tags         []*domain.Tag // Tags within this range
+}
+
+// BatchConfig configures the range-based batching algorithm.
+type BatchConfig struct {
+	// MaxRegistersPerRead is the maximum registers per single Modbus read (protocol limit: 125)
+	MaxRegistersPerRead uint16
+	// MaxGapSize is the maximum gap between addresses to merge into one read
+	// Higher values = fewer reads but more wasted bandwidth
+	MaxGapSize uint16
+}
+
+// DefaultBatchConfig returns sensible defaults for batching.
+func DefaultBatchConfig() BatchConfig {
+	return BatchConfig{
+		MaxRegistersPerRead: 100, // Conservative, well under 125 limit
+		MaxGapSize:          10,  // Merge if gap <= 10 registers
+	}
+}
+
+// buildContiguousRanges groups tags into contiguous address ranges for batched reads.
+// This is the "performance crown jewel" - reduces N reads to 1-5 reads for 100+ tags.
+func (c *Client) buildContiguousRanges(tags []*domain.Tag, config BatchConfig) []RegisterRange {
+	if len(tags) == 0 {
+		return nil
+	}
+
+	// Sort tags by address
+	sorted := make([]*domain.Tag, len(tags))
+	copy(sorted, tags)
+	sortTagsByAddress(sorted)
+
+	var ranges []RegisterRange
+	currentRange := RegisterRange{
+		StartAddress: sorted[0].Address,
+		EndAddress:   sorted[0].Address + sorted[0].RegisterCount - 1,
+		Tags:         []*domain.Tag{sorted[0]},
+	}
+
+	for i := 1; i < len(sorted); i++ {
+		tag := sorted[i]
+		tagEnd := tag.Address + tag.RegisterCount - 1
+
+		// Calculate gap between current range end and this tag's start
+		gap := int(tag.Address) - int(currentRange.EndAddress) - 1
+
+		// Calculate new range size if we merge
+		newRangeSize := tagEnd - currentRange.StartAddress + 1
+
+		// Merge if: gap is acceptable AND total size is within limits
+		if gap <= int(config.MaxGapSize) && newRangeSize <= config.MaxRegistersPerRead {
+			// Extend current range
+			if tagEnd > currentRange.EndAddress {
+				currentRange.EndAddress = tagEnd
+			}
+			currentRange.Tags = append(currentRange.Tags, tag)
+		} else {
+			// Start new range
+			ranges = append(ranges, currentRange)
+			currentRange = RegisterRange{
+				StartAddress: tag.Address,
+				EndAddress:   tagEnd,
+				Tags:         []*domain.Tag{tag},
+			}
+		}
+	}
+	// Don't forget the last range
+	ranges = append(ranges, currentRange)
+
+	return ranges
+}
+
+// sortTagsByAddress sorts tags by address in ascending order (insertion sort for small slices).
+func sortTagsByAddress(tags []*domain.Tag) {
+	for i := 1; i < len(tags); i++ {
+		j := i
+		for j > 0 && tags[j].Address < tags[j-1].Address {
+			tags[j], tags[j-1] = tags[j-1], tags[j]
+			j--
+		}
+	}
+}
+
+// readTagGroup reads a group of tags of the same register type using batched reads.
+// Uses range-based batching to minimize Modbus operations.
 func (c *Client) readTagGroup(ctx context.Context, tags []*domain.Tag) ([]*domain.DataPoint, error) {
+	if len(tags) == 0 {
+		return nil, nil
+	}
+
+	// For coils/discrete inputs, batch differently (they're packed in bits)
+	if tags[0].RegisterType == domain.RegisterTypeCoil ||
+		tags[0].RegisterType == domain.RegisterTypeDiscreteInput {
+		return c.readTagGroupIndividually(ctx, tags)
+	}
+
+	// Build contiguous ranges for holding/input registers
+	config := DefaultBatchConfig()
+	ranges := c.buildContiguousRanges(tags, config)
+
+	c.logger.Debug().
+		Int("tags", len(tags)).
+		Int("ranges", len(ranges)).
+		Msg("Batched tags into register ranges")
+
+	results := make([]*domain.DataPoint, 0, len(tags))
+
+	for _, rng := range ranges {
+		select {
+		case <-ctx.Done():
+			return results, ctx.Err()
+		default:
+		}
+
+		rangeResults, err := c.readRegisterRange(ctx, rng, tags[0].RegisterType)
+		if err != nil {
+			c.logger.Warn().Err(err).
+				Uint16("start", rng.StartAddress).
+				Uint16("end", rng.EndAddress).
+				Msg("Failed to read register range")
+			// Add error points for all tags in this range
+			for _, tag := range rng.Tags {
+				results = append(results, c.createErrorDataPoint(tag, err))
+			}
+			continue
+		}
+		results = append(results, rangeResults...)
+	}
+
+	return results, nil
+}
+
+// readRegisterRange reads a contiguous range of registers and extracts individual tag values.
+func (c *Client) readRegisterRange(ctx context.Context, rng RegisterRange, regType domain.RegisterType) ([]*domain.DataPoint, error) {
+	registerCount := rng.EndAddress - rng.StartAddress + 1
+
+	c.mu.RLock()
+	client := c.client
+	c.mu.RUnlock()
+
+	if client == nil {
+		return nil, domain.ErrConnectionClosed
+	}
+
+	// Read the entire range in one Modbus operation
+	c.opMu.Lock()
+	var rawData []byte
+	var err error
+	switch regType {
+	case domain.RegisterTypeHoldingRegister:
+		rawData, err = client.ReadHoldingRegisters(rng.StartAddress, registerCount)
+	case domain.RegisterTypeInputRegister:
+		rawData, err = client.ReadInputRegisters(rng.StartAddress, registerCount)
+	default:
+		c.opMu.Unlock()
+		return nil, domain.ErrInvalidRegisterType
+	}
+	c.opMu.Unlock()
+
+	if err != nil {
+		c.consecutiveFailures.Add(1)
+		return nil, c.translateModbusError(err)
+	}
+	c.consecutiveFailures.Store(0)
+	c.stats.ReadCount.Add(1)
+
+	// Extract individual tag values from the raw data
+	results := make([]*domain.DataPoint, 0, len(rng.Tags))
+	for _, tag := range rng.Tags {
+		// Calculate offset within the raw data
+		offset := int(tag.Address-rng.StartAddress) * 2 // 2 bytes per register
+		tagByteLen := int(tag.RegisterCount) * 2
+
+		if offset < 0 || offset+tagByteLen > len(rawData) {
+			c.logger.Error().
+				Str("tag", tag.ID).
+				Uint16("address", tag.Address).
+				Int("offset", offset).
+				Int("len", len(rawData)).
+				Msg("Tag data out of range")
+			results = append(results, c.createErrorDataPoint(tag, domain.ErrInvalidDataLength))
+			continue
+		}
+
+		tagData := rawData[offset : offset+tagByteLen]
+
+		value, err := c.parseValue(tagData, tag)
+		if err != nil {
+			results = append(results, c.createErrorDataPoint(tag, err))
+			continue
+		}
+
+		scaledValue := c.applyScaling(value, tag)
+		dp := domain.NewDataPoint(
+			c.deviceID,
+			tag.ID,
+			"",
+			scaledValue,
+			tag.Unit,
+			domain.QualityGood,
+		).WithRawValue(value).WithPriority(tag.Priority)
+
+		results = append(results, dp)
+	}
+
+	return results, nil
+}
+
+// readTagGroupIndividually reads tags one by one (fallback for coils/discrete inputs).
+func (c *Client) readTagGroupIndividually(ctx context.Context, tags []*domain.Tag) ([]*domain.DataPoint, error) {
 	results := make([]*domain.DataPoint, 0, len(tags))
 	for _, tag := range tags {
 		select {
@@ -500,14 +724,17 @@ func (c *Client) createErrorDataPoint(tag *domain.Tag, err error) *domain.DataPo
 	)
 }
 
-// calculateBackoff calculates exponential backoff delay.
+// calculateBackoff calculates exponential backoff delay with jitter.
+// Jitter prevents reconnection storms when multiple clients fail simultaneously.
 func (c *Client) calculateBackoff(attempt int) time.Duration {
 	delay := c.config.RetryDelay * time.Duration(1<<uint(attempt))
 	maxDelay := 10 * time.Second
 	if delay > maxDelay {
 		delay = maxDelay
 	}
-	return delay
+	// Add ±25% jitter to prevent thundering herd
+	jitter := time.Duration(rand.Int64N(int64(delay)/2)) - (delay / 4)
+	return delay + jitter
 }
 
 // isRetryableError determines if an error is transient and worth retrying.
@@ -520,6 +747,7 @@ func (c *Client) isRetryableError(err error) bool {
 }
 
 // isConnectionError checks if the error is a connection-related error.
+// Includes io.EOF which goburrow/modbus returns on connection drops.
 func (c *Client) isConnectionError(err error) bool {
 	if err == nil {
 		return false
@@ -527,6 +755,29 @@ func (c *Client) isConnectionError(err error) bool {
 	// Check for network errors
 	if _, ok := err.(net.Error); ok {
 		return true
+	}
+	// goburrow/modbus often returns EOF on connection drops
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	// Check for common connection-related error strings
+	errStr := err.Error()
+	if contains(errStr, "connection reset", "broken pipe", "connection refused", "no route to host") {
+		return true
+	}
+	return false
+}
+
+// contains checks if s contains any of the substrings.
+func contains(s string, substrs ...string) bool {
+	for _, sub := range substrs {
+		if len(s) >= len(sub) {
+			for i := 0; i <= len(s)-len(sub); i++ {
+				if s[i:i+len(sub)] == sub {
+					return true
+				}
+			}
+		}
 	}
 	return false
 }
@@ -629,6 +880,7 @@ func (c *Client) WriteTag(ctx context.Context, tag *domain.Tag, value interface{
 }
 
 // writeRegister performs the actual Modbus write operation.
+// Uses opMu to serialize operations - goburrow/modbus Client is NOT thread-safe.
 func (c *Client) writeRegister(tag *domain.Tag, value interface{}) error {
 	c.mu.RLock()
 	client := c.client
@@ -638,18 +890,31 @@ func (c *Client) writeRegister(tag *domain.Tag, value interface{}) error {
 		return domain.ErrConnectionClosed
 	}
 
+	// Serialize all Modbus operations to prevent protocol corruption
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+
+	var err error
 	switch tag.RegisterType {
 	case domain.RegisterTypeCoil:
-		return c.writeSingleCoil(client, tag.Address, value)
+		err = c.writeSingleCoilLocked(client, tag.Address, value)
 	case domain.RegisterTypeHoldingRegister:
-		return c.writeHoldingRegister(client, tag, value)
+		err = c.writeHoldingRegisterLocked(client, tag, value)
 	default:
 		return fmt.Errorf("%w: %s is read-only", domain.ErrTagNotWritable, tag.RegisterType)
 	}
+
+	if err != nil {
+		c.consecutiveFailures.Add(1)
+		return err
+	}
+	c.consecutiveFailures.Store(0)
+	return nil
 }
 
-// writeSingleCoil writes a boolean value to a coil (function code 0x05).
-func (c *Client) writeSingleCoil(client modbus.Client, address uint16, value interface{}) error {
+// writeSingleCoilLocked writes a boolean value to a coil (function code 0x05).
+// Caller must hold opMu.
+func (c *Client) writeSingleCoilLocked(client modbus.Client, address uint16, value interface{}) error {
 	boolValue, ok := c.toBool(value)
 	if !ok {
 		return fmt.Errorf("%w: cannot convert %T to bool for coil", domain.ErrInvalidWriteValue, value)
@@ -670,8 +935,9 @@ func (c *Client) writeSingleCoil(client modbus.Client, address uint16, value int
 	return nil
 }
 
-// writeHoldingRegister writes a value to holding register(s).
-func (c *Client) writeHoldingRegister(client modbus.Client, tag *domain.Tag, value interface{}) error {
+// writeHoldingRegisterLocked writes a value to holding register(s).
+// Caller must hold opMu.
+func (c *Client) writeHoldingRegisterLocked(client modbus.Client, tag *domain.Tag, value interface{}) error {
 	// Convert value to bytes based on data type
 	bytes, err := c.valueToBytes(value, tag)
 	if err != nil {
@@ -721,13 +987,19 @@ func (c *Client) WriteSingleCoil(ctx context.Context, address uint16, value bool
 		coilValue = 0xFF00
 	}
 
+	// Serialize all Modbus operations
+	c.opMu.Lock()
 	_, err := client.WriteSingleCoil(address, coilValue)
+	c.opMu.Unlock()
+
 	if err != nil {
 		c.stats.ErrorCount.Add(1)
+		c.consecutiveFailures.Add(1)
 		return fmt.Errorf("%w: %v", domain.ErrWriteFailed, err)
 	}
 
 	c.stats.WriteCount.Add(1)
+	c.consecutiveFailures.Store(0)
 	return nil
 }
 
@@ -749,13 +1021,19 @@ func (c *Client) WriteSingleRegister(ctx context.Context, address uint16, value 
 		return domain.ErrConnectionClosed
 	}
 
+	// Serialize all Modbus operations
+	c.opMu.Lock()
 	_, err := client.WriteSingleRegister(address, value)
+	c.opMu.Unlock()
+
 	if err != nil {
 		c.stats.ErrorCount.Add(1)
+		c.consecutiveFailures.Add(1)
 		return fmt.Errorf("%w: %v", domain.ErrWriteFailed, err)
 	}
 
 	c.stats.WriteCount.Add(1)
+	c.consecutiveFailures.Store(0)
 	return nil
 }
 
@@ -783,13 +1061,19 @@ func (c *Client) WriteMultipleRegisters(ctx context.Context, address uint16, val
 		binary.BigEndian.PutUint16(bytes[i*2:], v)
 	}
 
+	// Serialize all Modbus operations
+	c.opMu.Lock()
 	_, err := client.WriteMultipleRegisters(address, uint16(len(values)), bytes)
+	c.opMu.Unlock()
+
 	if err != nil {
 		c.stats.ErrorCount.Add(1)
+		c.consecutiveFailures.Add(1)
 		return fmt.Errorf("%w: %v", domain.ErrWriteFailed, err)
 	}
 
 	c.stats.WriteCount.Add(1)
+	c.consecutiveFailures.Store(0)
 	return nil
 }
 
@@ -820,13 +1104,19 @@ func (c *Client) WriteMultipleCoils(ctx context.Context, address uint16, values 
 		}
 	}
 
+	// Serialize all Modbus operations
+	c.opMu.Lock()
 	_, err := client.WriteMultipleCoils(address, uint16(len(values)), bytes)
+	c.opMu.Unlock()
+
 	if err != nil {
 		c.stats.ErrorCount.Add(1)
+		c.consecutiveFailures.Add(1)
 		return fmt.Errorf("%w: %v", domain.ErrWriteFailed, err)
 	}
 
 	c.stats.WriteCount.Add(1)
+	c.consecutiveFailures.Store(0)
 	return nil
 }
 
@@ -1071,12 +1361,12 @@ func (c *Client) toFloat64(v interface{}) (float64, bool) {
 // GetStats returns the client statistics.
 func (c *Client) GetStats() map[string]uint64 {
 	return map[string]uint64{
-		"read_count":       c.stats.ReadCount.Load(),
-		"write_count":      c.stats.WriteCount.Load(),
-		"error_count":      c.stats.ErrorCount.Load(),
-		"retry_count":      c.stats.RetryCount.Load(),
-		"total_read_ns":    uint64(c.stats.TotalReadTime.Load()),
-		"total_write_ns":   uint64(c.stats.TotalWriteTime.Load()),
+		"read_count":     c.stats.ReadCount.Load(),
+		"write_count":    c.stats.WriteCount.Load(),
+		"error_count":    c.stats.ErrorCount.Load(),
+		"retry_count":    c.stats.RetryCount.Load(),
+		"total_read_ns":  uint64(c.stats.TotalReadTime.Load()),
+		"total_write_ns": uint64(c.stats.TotalWriteTime.Load()),
 	}
 }
 
@@ -1096,4 +1386,3 @@ func (c *Client) LastUsed() time.Time {
 func (c *Client) DeviceID() string {
 	return c.deviceID
 }
-

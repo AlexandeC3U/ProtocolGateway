@@ -5,8 +5,11 @@ package opcua
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"math"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,19 +21,35 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// SessionState represents the OPC UA session state machine.
+type SessionState string
+
+const (
+	SessionStateDisconnected  SessionState = "disconnected"
+	SessionStateConnecting    SessionState = "connecting"
+	SessionStateSecureChannel SessionState = "secure_channel"
+	SessionStateActive        SessionState = "active"
+	SessionStateError         SessionState = "error"
+)
+
 // Client represents an OPC UA client connection to a single server.
 type Client struct {
-	config      ClientConfig
-	client      *opcua.Client
-	logger      zerolog.Logger
-	mu          sync.RWMutex
-	connected   atomic.Bool
-	lastError   error
-	lastUsed    time.Time
-	stats       *ClientStats
-	deviceID    string
-	nodeCache   map[string]*ua.NodeID // Cache parsed node IDs
-	nodeCacheMu sync.RWMutex
+	config       ClientConfig
+	client       *opcua.Client
+	logger       zerolog.Logger
+	mu           sync.RWMutex
+	opMu         sync.Mutex // Serializes OPC UA operations for thread safety
+	connected    atomic.Bool
+	sessionState SessionState
+	lastError    error
+	lastUsed     time.Time
+	stats        *ClientStats
+	deviceID     string
+	nodeCache    map[string]*ua.NodeID // Cache parsed node IDs
+	nodeCacheMu  sync.RWMutex
+
+	// Consecutive failures for backoff reset
+	consecutiveFailures atomic.Int32
 }
 
 // ClientConfig holds configuration for an OPC UA client.
@@ -76,6 +95,17 @@ type ClientConfig struct {
 
 	// SessionTimeout is the session timeout on the server
 	SessionTimeout time.Duration
+
+	// === Subscription Settings ===
+
+	// DefaultPublishingInterval is the default subscription publishing interval
+	DefaultPublishingInterval time.Duration
+
+	// DefaultSamplingInterval is the default monitored item sampling interval
+	DefaultSamplingInterval time.Duration
+
+	// DefaultQueueSize is the default monitored item queue size
+	DefaultQueueSize uint32
 }
 
 // ClientStats tracks client performance metrics.
@@ -124,14 +154,25 @@ func NewClient(deviceID string, config ClientConfig, logger zerolog.Logger) (*Cl
 	if config.AuthMode == "" {
 		config.AuthMode = "Anonymous"
 	}
+	// Subscription defaults
+	if config.DefaultPublishingInterval == 0 {
+		config.DefaultPublishingInterval = 1 * time.Second
+	}
+	if config.DefaultSamplingInterval == 0 {
+		config.DefaultSamplingInterval = 500 * time.Millisecond
+	}
+	if config.DefaultQueueSize == 0 {
+		config.DefaultQueueSize = 10
+	}
 
 	c := &Client{
-		config:    config,
-		logger:    logger.With().Str("device_id", deviceID).Str("endpoint", config.EndpointURL).Logger(),
-		stats:     &ClientStats{},
-		deviceID:  deviceID,
-		lastUsed:  time.Now(),
-		nodeCache: make(map[string]*ua.NodeID),
+		config:       config,
+		logger:       logger.With().Str("device_id", deviceID).Str("endpoint", config.EndpointURL).Logger(),
+		stats:        &ClientStats{},
+		deviceID:     deviceID,
+		lastUsed:     time.Now(),
+		nodeCache:    make(map[string]*ua.NodeID),
+		sessionState: SessionStateDisconnected,
 	}
 
 	return c, nil
@@ -146,6 +187,7 @@ func (c *Client) Connect(ctx context.Context) error {
 		return nil
 	}
 
+	c.sessionState = SessionStateConnecting
 	c.logger.Debug().Msg("Connecting to OPC UA server")
 
 	// Build client options
@@ -189,13 +231,16 @@ func (c *Client) Connect(ctx context.Context) error {
 		// Without this, repeated retries can exhaust server session limits.
 		_ = client.Close(context.Background())
 		c.lastError = err
+		c.sessionState = SessionStateError
 		return fmt.Errorf("%w: %v", domain.ErrConnectionFailed, err)
 	}
 
 	c.client = client
 	c.connected.Store(true)
+	c.sessionState = SessionStateActive
 	c.lastError = nil
 	c.lastUsed = time.Now()
+	c.consecutiveFailures.Store(0)
 
 	c.logger.Info().Msg("Connected to OPC UA server")
 	return nil
@@ -217,6 +262,7 @@ func (c *Client) Disconnect() error {
 	}
 
 	c.connected.Store(false)
+	c.sessionState = SessionStateDisconnected
 	c.client = nil
 
 	// Clear node cache
@@ -226,6 +272,13 @@ func (c *Client) Disconnect() error {
 
 	c.logger.Debug().Msg("Disconnected from OPC UA server")
 	return nil
+}
+
+// GetSessionState returns the current session state.
+func (c *Client) GetSessionState() SessionState {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.sessionState
 }
 
 // IsConnected returns true if the client is currently connected.
@@ -561,6 +614,7 @@ type TagWrite struct {
 }
 
 // readNode performs a single node read operation.
+// Uses opMu to serialize operations for thread safety.
 func (c *Client) readNode(ctx context.Context, nodeID *ua.NodeID, tag *domain.Tag) (*domain.DataPoint, error) {
 	c.mu.RLock()
 	client := c.client
@@ -569,6 +623,10 @@ func (c *Client) readNode(ctx context.Context, nodeID *ua.NodeID, tag *domain.Ta
 	if client == nil {
 		return nil, domain.ErrConnectionClosed
 	}
+
+	// Serialize OPC UA operations
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
 
 	req := &ua.ReadRequest{
 		MaxAge:             0,
@@ -584,6 +642,7 @@ func (c *Client) readNode(ctx context.Context, nodeID *ua.NodeID, tag *domain.Ta
 
 	resp, err := client.Read(ctx, req)
 	if err != nil {
+		c.consecutiveFailures.Add(1)
 		return nil, fmt.Errorf("%w: %v", domain.ErrReadFailed, err)
 	}
 
@@ -591,10 +650,12 @@ func (c *Client) readNode(ctx context.Context, nodeID *ua.NodeID, tag *domain.Ta
 		return nil, fmt.Errorf("%w: no results returned", domain.ErrReadFailed)
 	}
 
+	c.consecutiveFailures.Store(0)
 	return c.processReadResult(resp.Results[0], tag), nil
 }
 
 // writeNode performs a single node write operation.
+// Uses opMu to serialize operations for thread safety.
 func (c *Client) writeNode(ctx context.Context, nodeID *ua.NodeID, variant *ua.Variant) error {
 	c.mu.RLock()
 	client := c.client
@@ -603,6 +664,10 @@ func (c *Client) writeNode(ctx context.Context, nodeID *ua.NodeID, variant *ua.V
 	if client == nil {
 		return domain.ErrConnectionClosed
 	}
+
+	// Serialize OPC UA operations
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
 
 	req := &ua.WriteRequest{
 		NodesToWrite: []*ua.WriteValue{
@@ -619,6 +684,7 @@ func (c *Client) writeNode(ctx context.Context, nodeID *ua.NodeID, variant *ua.V
 
 	resp, err := client.Write(ctx, req)
 	if err != nil {
+		c.consecutiveFailures.Add(1)
 		return fmt.Errorf("%w: %v", domain.ErrWriteFailed, err)
 	}
 
@@ -627,9 +693,11 @@ func (c *Client) writeNode(ctx context.Context, nodeID *ua.NodeID, variant *ua.V
 	}
 
 	if resp.Results[0] != ua.StatusOK {
+		c.consecutiveFailures.Add(1)
 		return fmt.Errorf("%w: status code %d", domain.ErrWriteFailed, resp.Results[0])
 	}
 
+	c.consecutiveFailures.Store(0)
 	return nil
 }
 
@@ -661,7 +729,7 @@ func (c *Client) processReadResult(result *ua.DataValue, tag *domain.Tag) *domai
 		scaledValue,
 		tag.Unit,
 		quality,
-	).WithRawValue(value)
+	).WithRawValue(value).WithPriority(tag.Priority)
 
 	// Set source timestamp from OPC UA if available
 	if !result.SourceTimestamp.IsZero() {
@@ -883,14 +951,17 @@ func (c *Client) createErrorDataPoint(tag *domain.Tag, err error) *domain.DataPo
 	)
 }
 
-// calculateBackoff calculates exponential backoff delay.
+// calculateBackoff calculates exponential backoff delay with jitter.
+// Jitter prevents reconnection storms when multiple clients fail simultaneously.
 func (c *Client) calculateBackoff(attempt int) time.Duration {
 	delay := c.config.RetryDelay * time.Duration(1<<uint(attempt))
 	maxDelay := 10 * time.Second
 	if delay > maxDelay {
 		delay = maxDelay
 	}
-	return delay
+	// Add ±25% jitter to prevent thundering herd
+	jitter := time.Duration(rand.Int64N(int64(delay)/2)) - (delay / 4)
+	return delay + jitter
 }
 
 // isRetryableError determines if an error is transient and worth retrying.
@@ -911,13 +982,19 @@ func (c *Client) isConnectionError(err error) bool {
 	if err == nil {
 		return false
 	}
+	// Check for EOF errors (common on connection drops)
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
 	// Check for common connection error patterns
 	errStr := err.Error()
 	return contains(errStr, "connection") ||
 		contains(errStr, "timeout") ||
 		contains(errStr, "closed") ||
 		contains(errStr, "refused") ||
-		contains(errStr, "reset")
+		contains(errStr, "reset") ||
+		contains(errStr, "broken pipe") ||
+		contains(errStr, "no route to host")
 }
 
 func isTooManySessionsError(err error) bool {

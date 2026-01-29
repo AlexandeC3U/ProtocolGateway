@@ -100,6 +100,7 @@ var (
 var (
 	ErrServiceNotStarted    = errors.New("service not started")
 	ErrServiceStopped       = errors.New("service has been stopped")
+	ErrServiceOverloaded    = errors.New("service overloaded - brownout mode active")
 	ErrDeviceNotFound       = errors.New("device not found")
 	ErrDeviceExists         = errors.New("device already exists")
 	ErrTagNotFound          = errors.New("tag not found")

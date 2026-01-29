@@ -109,6 +109,13 @@ type Tag struct {
 	// AccessMode specifies read/write access (read, write, readwrite)
 	AccessMode AccessMode `json:"access_mode,omitempty" yaml:"access_mode,omitempty"`
 
+	// Priority defines the QoS tier for this tag:
+	//   0 = Telemetry (default) - regular data, best-effort delivery
+	//   1 = Control - write commands, operational data, higher priority
+	//   2 = Safety/Alarm - emergency stops, alarms, highest priority
+	// Higher priority tags get dedicated worker pools and faster processing.
+	Priority uint8 `json:"priority,omitempty" yaml:"priority,omitempty"`
+
 	// OPCNodeID is the OPC UA node identifier (e.g., "ns=2;s=Temperature" or "ns=2;i=1234")
 	OPCNodeID string `json:"opc_node_id,omitempty" yaml:"opc_node_id,omitempty"`
 
@@ -160,6 +167,21 @@ const (
 
 // Validate performs validation on the tag configuration.
 func (t *Tag) Validate() error {
+	// Backwards-compatible behavior: infer protocol from which protocol-specific
+	// fields are present. Prefer ValidateForProtocol when the protocol is known.
+	if t.OPCNodeID != "" {
+		return t.ValidateForProtocol(ProtocolOPCUA)
+	}
+	if t.S7Address != "" {
+		return t.ValidateForProtocol(ProtocolS7)
+	}
+	// If the protocol isn't explicit on the tag, default to Modbus-style checks.
+	return t.ValidateForProtocol(ProtocolModbusTCP)
+}
+
+// ValidateForProtocol performs validation on the tag configuration with the
+// device's protocol context.
+func (t *Tag) ValidateForProtocol(protocol Protocol) error {
 	if t.ID == "" {
 		return fmt.Errorf("tag ID is required")
 	}
@@ -173,15 +195,12 @@ func (t *Tag) Validate() error {
 		return fmt.Errorf("data type is required for tag %s", t.ID)
 	}
 
-	// RegisterType is only required for Modbus tags (not OPC UA or S7)
-	// OPC UA uses OPCNodeID, S7 uses S7Address
-	isModbus := t.OPCNodeID == "" && t.S7Address == ""
-	if isModbus && t.RegisterType == "" {
-		return fmt.Errorf("register type is required for Modbus tag %s", t.ID)
-	}
+	switch protocol {
+	case ProtocolModbusTCP, ProtocolModbusRTU:
+		if t.RegisterType == "" {
+			return fmt.Errorf("register type is required for Modbus tag %s", t.ID)
+		}
 
-	// Validate register count based on data type (Modbus only)
-	if isModbus {
 		expectedCount := t.ExpectedRegisterCount()
 		if t.RegisterCount == 0 {
 			t.RegisterCount = expectedCount
@@ -190,10 +209,21 @@ func (t *Tag) Validate() error {
 				t.RegisterCount, t.DataType, expectedCount)
 		}
 
-		// Set default byte order
 		if t.ByteOrder == "" {
 			t.ByteOrder = ByteOrderBigEndian
 		}
+	case ProtocolOPCUA:
+		if t.OPCNodeID == "" {
+			return fmt.Errorf("opc node id is required for OPC UA tag %s", t.ID)
+		}
+	case ProtocolS7:
+		if t.S7Address == "" {
+			return fmt.Errorf("s7 address is required for S7 tag %s", t.ID)
+		}
+	case ProtocolMQTT:
+		// No extra required fields beyond the common ones.
+	default:
+		return fmt.Errorf("unsupported protocol %q for tag %s", protocol, t.ID)
 	}
 
 	// Set default scale factor
@@ -259,4 +289,3 @@ func (t *Tag) IsReadable() bool {
 	// By default, all tags are readable
 	return true
 }
-

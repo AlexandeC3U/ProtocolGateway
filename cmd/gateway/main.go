@@ -27,7 +27,7 @@ import (
 
 const (
 	serviceName    = "protocol-gateway"
-	serviceVersion = "1.0.0"
+	serviceVersion = "2.0.0"
 )
 
 func main() {
@@ -44,6 +44,12 @@ func main() {
 
 	// Initialize metrics
 	metricsRegistry := metrics.NewRegistry()
+	// Pre-seed per-protocol connection gauges so they appear in Prometheus
+	// even before the first connection attempt.
+	metricsRegistry.UpdateActiveConnectionsForProtocol(string(domain.ProtocolModbusTCP), 0)
+	metricsRegistry.UpdateActiveConnectionsForProtocol(string(domain.ProtocolModbusRTU), 0)
+	metricsRegistry.UpdateActiveConnectionsForProtocol(string(domain.ProtocolOPCUA), 0)
+	metricsRegistry.UpdateActiveConnectionsForProtocol(string(domain.ProtocolS7), 0)
 
 	// Create root context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())
@@ -124,7 +130,7 @@ func main() {
 		MaxConnections:      cfg.S7.MaxConnections,
 		IdleTimeout:         cfg.S7.IdleTimeout,
 		HealthCheckInterval: cfg.S7.HealthCheckPeriod,
-	}, logger)
+	}, logger, metricsRegistry)
 	defer s7Pool.Close()
 
 	// Register S7 protocol
@@ -222,6 +228,9 @@ func main() {
 	healthChecker.AddCheck("modbus_pool", modbusPool)
 	healthChecker.AddCheck("opcua_pool", opcuaPool)
 	healthChecker.AddCheck("s7_pool", s7Pool)
+
+	// Start background health checks
+	healthChecker.Start()
 
 	// Start HTTP server for health, metrics, and web UI
 	mux := http.NewServeMux()
@@ -367,6 +376,9 @@ func main() {
 	<-quit
 
 	logger.Info().Msg("Shutdown signal received, initiating graceful shutdown...")
+
+	// Stop health checker first (marks state as shutting down)
+	healthChecker.Stop()
 
 	// Create shutdown context with timeout
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)

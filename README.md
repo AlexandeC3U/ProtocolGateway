@@ -136,6 +136,125 @@ The gateway publishes a response to `$nexus/cmd/{device_id}/{tag_id}/response`:
 
 ```json
 {"device_id":"SIM","tag_id":"tag-1769444077413","success":true,"timestamp":"2026-01-27T12:00:00Z","duration_ms":45}
+```## 6) Health & Metrics Endpoints
+
+The gateway exposes several HTTP endpoints for monitoring and observability on port **8080**.
+
+### Health Endpoints
+
+| Endpoint | Description | Use Case |
+|----------|-------------|----------|
+| `/health` | Full health status with all component checks | Detailed diagnostics |
+| `/health/live` | Liveness probe (is the service running?) | Kubernetes liveness probe |
+| `/health/ready` | Readiness probe (is the service ready to accept traffic?) | Kubernetes readiness probe |
+| `/status` | Basic service status with polling statistics | Quick status check |
+
+#### Example: Full Health Check
+
+```bash
+curl http://localhost:8080/health | jq
+```
+
+Response:
+```json
+{
+  "status": "healthy",
+  "state": "running",
+  "service": "protocol-gateway",
+  "version": "1.0.0",
+  "timestamp": "2026-01-29T10:00:00Z",
+  "checks": {
+    "mqtt": { "name": "mqtt", "status": "healthy", "severity": "critical" },
+    "modbus_pool": { "name": "modbus_pool", "status": "healthy", "severity": "warning" },
+    "opcua_pool": { "name": "opcua_pool", "status": "healthy", "severity": "warning" },
+    "s7_pool": { "name": "s7_pool", "status": "healthy", "severity": "warning" }
+  }
+}
+```
+
+#### Example: Liveness Probe
+
+```bash
+curl -w "%{http_code}" http://localhost:8080/health/live
+# Returns 200 if alive, 503 if not
+```
+
+#### Example: Readiness Probe
+
+```bash
+curl -w "%{http_code}" http://localhost:8080/health/ready
+# Returns 200 if ready, 503 if not ready
+```
+
+#### Example: Status Endpoint
+
+```bash
+curl http://localhost:8080/status | jq
+```
+
+Response:
+```json
+{
+  "service": "protocol-gateway",
+  "version": "1.0.0",
+  "polling": {
+    "total_polls": 1234,
+    "success_polls": 1200,
+    "failed_polls": 34,
+    "skipped_polls": 0,
+    "points_read": 4800,
+    "points_published": 4800
+  }
+}
+```
+
+### Metrics Endpoint (Prometheus)
+
+The `/metrics` endpoint exposes Prometheus-compatible metrics for monitoring dashboards (Grafana, etc.).
+
+```bash
+curl http://localhost:8080/metrics
+```
+
+#### Key Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `gateway_connections_active` | Gauge | Active connections per protocol |
+| `gateway_connections_attempts_total` | Counter | Total connection attempts |
+| `gateway_connections_errors_total` | Counter | Total connection errors |
+| `gateway_polling_polls_total` | Counter | Total poll operations (by device/status) |
+| `gateway_polling_polls_skipped_total` | Counter | Polls skipped due to back-pressure |
+| `gateway_polling_duration_seconds` | Histogram | Poll cycle duration |
+| `gateway_polling_points_read_total` | Counter | Data points read |
+| `gateway_polling_points_published_total` | Counter | Data points published |
+| `gateway_mqtt_messages_published_total` | Counter | MQTT messages published |
+| `gateway_mqtt_messages_failed_total` | Counter | Failed MQTT publishes |
+| `gateway_mqtt_reconnects_total` | Counter | MQTT reconnection attempts |
+
+#### Example Prometheus Query
+
+```promql
+# Poll success rate over last 5 minutes
+rate(gateway_polling_polls_total{status="success"}[5m])
+
+# Active connections by protocol
+gateway_connections_active
+
+# MQTT publish error rate
+rate(gateway_mqtt_messages_failed_total[5m])
+```
+
+### Using with Docker Compose Health Checks
+
+The `docker-compose.yaml` is pre-configured to use the liveness endpoint:
+
+```yaml
+healthcheck:
+  test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/live"]
+  interval: 10s
+  timeout: 5s
+  retries: 3
 ```
 ## Notes / Troubleshooting
 

@@ -8,11 +8,11 @@ import (
 
 // Registry holds all Prometheus metrics for the service.
 type Registry struct {
-	// Connection metrics
-	ActiveConnections prometheus.Gauge
-	ConnectionsTotal  prometheus.Counter
-	ConnectionErrors  prometheus.Counter
-	ConnectionLatency prometheus.Histogram
+	// Connection metrics (protocol-labeled)
+	ActiveConnectionsByProtocol *prometheus.GaugeVec
+	ConnectionsTotalByProtocol  *prometheus.CounterVec
+	ConnectionErrorsByProtocol  *prometheus.CounterVec
+	ConnectionLatencyByProtocol *prometheus.HistogramVec
 
 	// Polling metrics
 	PollsTotal            *prometheus.CounterVec
@@ -44,31 +44,31 @@ type Registry struct {
 func NewRegistry() *Registry {
 	r := &Registry{
 		// Connection metrics
-		ActiveConnections: promauto.NewGauge(prometheus.GaugeOpts{
+		ActiveConnectionsByProtocol: promauto.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: "gateway",
-			Subsystem: "modbus",
-			Name:      "active_connections",
-			Help:      "Number of active Modbus connections",
-		}),
-		ConnectionsTotal: promauto.NewCounter(prometheus.CounterOpts{
+			Subsystem: "connections",
+			Name:      "active",
+			Help:      "Number of active connections (all protocols)",
+		}, []string{"protocol"}),
+		ConnectionsTotalByProtocol: promauto.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "gateway",
-			Subsystem: "modbus",
-			Name:      "connections_total",
-			Help:      "Total number of Modbus connection attempts",
-		}),
-		ConnectionErrors: promauto.NewCounter(prometheus.CounterOpts{
+			Subsystem: "connections",
+			Name:      "attempts_total",
+			Help:      "Total number of connection attempts by protocol",
+		}, []string{"protocol"}),
+		ConnectionErrorsByProtocol: promauto.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "gateway",
-			Subsystem: "modbus",
-			Name:      "connection_errors_total",
-			Help:      "Total number of Modbus connection errors",
-		}),
-		ConnectionLatency: promauto.NewHistogram(prometheus.HistogramOpts{
+			Subsystem: "connections",
+			Name:      "errors_total",
+			Help:      "Total number of connection errors by protocol",
+		}, []string{"protocol"}),
+		ConnectionLatencyByProtocol: promauto.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: "gateway",
-			Subsystem: "modbus",
-			Name:      "connection_latency_seconds",
-			Help:      "Modbus connection establishment latency",
+			Subsystem: "connections",
+			Name:      "latency_seconds",
+			Help:      "Connection establishment latency by protocol",
 			Buckets:   []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
-		}),
+		}, []string{"protocol"}),
 
 		// Polling metrics
 		PollsTotal: promauto.NewCounterVec(prometheus.CounterOpts{
@@ -226,13 +226,13 @@ func (r *Registry) UpdateMQTTBufferSize(size int) {
 	r.MQTTBufferSize.Set(float64(size))
 }
 
-// RecordConnection records a connection event.
-func (r *Registry) RecordConnection(success bool, latency float64) {
-	r.ConnectionsTotal.Inc()
+// RecordConnectionForProtocol records a connection attempt for a specific protocol.
+func (r *Registry) RecordConnectionForProtocol(protocol string, success bool, latency float64) {
+	r.ConnectionsTotalByProtocol.WithLabelValues(protocol).Inc()
 	if !success {
-		r.ConnectionErrors.Inc()
+		r.ConnectionErrorsByProtocol.WithLabelValues(protocol).Inc()
 	}
-	r.ConnectionLatency.Observe(latency)
+	r.ConnectionLatencyByProtocol.WithLabelValues(protocol).Observe(latency)
 }
 
 // UpdateDeviceCount updates the device count gauges.
@@ -241,7 +241,7 @@ func (r *Registry) UpdateDeviceCount(registered, online int) {
 	r.DevicesOnline.Set(float64(online))
 }
 
-// UpdateActiveConnections updates the active connections gauge.
-func (r *Registry) UpdateActiveConnections(count int) {
-	r.ActiveConnections.Set(float64(count))
+// UpdateActiveConnectionsForProtocol updates the active connection gauge for a specific protocol.
+func (r *Registry) UpdateActiveConnectionsForProtocol(protocol string, count int) {
+	r.ActiveConnectionsByProtocol.WithLabelValues(protocol).Set(float64(count))
 }

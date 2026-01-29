@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/nexus-edge/protocol-gateway/internal/domain"
+	"github.com/nexus-edge/protocol-gateway/internal/metrics"
 	"github.com/rs/zerolog"
 	"github.com/sony/gobreaker"
 )
@@ -17,6 +18,7 @@ type Pool struct {
 	clients        map[string]*clientEntry
 	mu             sync.RWMutex
 	logger         zerolog.Logger
+	metrics        *metrics.Registry
 	maxConnections int
 	idleTimeout    time.Duration
 	healthCheck    time.Duration
@@ -65,7 +67,7 @@ type CircuitBreakerConfig struct {
 }
 
 // NewPool creates a new S7 connection pool.
-func NewPool(config PoolConfig, logger zerolog.Logger) *Pool {
+func NewPool(config PoolConfig, logger zerolog.Logger, metricsReg *metrics.Registry) *Pool {
 	if config.MaxConnections == 0 {
 		config.MaxConnections = 100
 	}
@@ -79,6 +81,7 @@ func NewPool(config PoolConfig, logger zerolog.Logger) *Pool {
 	pool := &Pool{
 		clients:        make(map[string]*clientEntry),
 		logger:         logger.With().Str("component", "s7-pool").Logger(),
+		metrics:        metricsReg,
 		maxConnections: config.MaxConnections,
 		idleTimeout:    config.IdleTimeout,
 		healthCheck:    config.HealthCheckInterval,
@@ -175,7 +178,12 @@ func (p *Pool) createClient(ctx context.Context, device *domain.Device) (*Client
 		return nil, err
 	}
 
-	if err := client.Connect(ctx); err != nil {
+	start := time.Now()
+	err = client.Connect(ctx)
+	if p.metrics != nil {
+		p.metrics.RecordConnectionForProtocol(string(domain.ProtocolS7), err == nil, time.Since(start).Seconds())
+	}
+	if err != nil {
 		return nil, err
 	}
 
@@ -396,8 +404,26 @@ func (p *Pool) healthCheckLoop() {
 			return
 		case <-ticker.C:
 			p.checkConnections()
+			p.publishActiveConnectionMetrics()
 		}
 	}
+}
+
+func (p *Pool) publishActiveConnectionMetrics() {
+	if p.metrics == nil {
+		return
+	}
+
+	active := 0
+	p.mu.RLock()
+	for _, entry := range p.clients {
+		if entry.client.IsConnected() {
+			active++
+		}
+	}
+	p.mu.RUnlock()
+
+	p.metrics.UpdateActiveConnectionsForProtocol(string(domain.ProtocolS7), active)
 }
 
 // checkConnections checks all connections and removes dead ones.
@@ -447,13 +473,13 @@ func (p *Pool) GetStats() PoolStats {
 	for id, entry := range p.clients {
 		clientStats := entry.client.GetStats()
 		stats.Devices = append(stats.Devices, DeviceStats{
-			DeviceID:       id,
-			Connected:      entry.client.IsConnected(),
-			LastUsed:       entry.lastUse,
-			ReadCount:      clientStats["read_count"],
-			WriteCount:     clientStats["write_count"],
-			ErrorCount:     clientStats["error_count"],
-			BreakerState:   entry.breaker.State().String(),
+			DeviceID:     id,
+			Connected:    entry.client.IsConnected(),
+			LastUsed:     entry.lastUse,
+			ReadCount:    clientStats["read_count"],
+			WriteCount:   clientStats["write_count"],
+			ErrorCount:   clientStats["error_count"],
+			BreakerState: entry.breaker.State().String(),
 		})
 	}
 
@@ -497,4 +523,3 @@ func (p *Pool) HealthCheck(ctx context.Context) error {
 
 	return domain.ErrConnectionClosed
 }
-

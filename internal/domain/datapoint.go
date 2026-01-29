@@ -51,11 +51,26 @@ type DataPoint struct {
 	// Quality indicates the reliability of this data point
 	Quality Quality `json:"q"`
 
-	// Timestamp is when this value was read from the device
+	// Timestamp is when this value was read from the device (gateway clock)
 	Timestamp time.Time `json:"ts"`
 
-	// SourceTimestamp is the device-provided timestamp (if available)
+	// SourceTimestamp is the device-provided timestamp (if available, e.g., OPC UA)
 	SourceTimestamp *time.Time `json:"source_ts,omitempty"`
+
+	// GatewayTimestamp is when the gateway received/processed the data
+	GatewayTimestamp time.Time `json:"gateway_ts,omitempty"`
+
+	// PublishTimestamp is when the data was published to MQTT (set by publisher)
+	PublishTimestamp *time.Time `json:"publish_ts,omitempty"`
+
+	// LatencyMs is the end-to-end latency from device read to publish (milliseconds)
+	LatencyMs *int64 `json:"latency_ms,omitempty"`
+
+	// StalenessMs indicates how old the data is relative to expected poll interval
+	StalenessMs *int64 `json:"staleness_ms,omitempty"`
+
+	// Priority indicates QoS tier (0=telemetry/default, 1=control, 2=safety/alarm)
+	Priority uint8 `json:"priority,omitempty"`
 
 	// Metadata contains additional context
 	Metadata map[string]string `json:"meta,omitempty"`
@@ -135,8 +150,13 @@ func AcquireDataPoint(deviceID, tagID, topic string, value interface{}, unit str
 	dp.Unit = unit
 	dp.Quality = quality
 	dp.Timestamp = time.Now()
+	dp.GatewayTimestamp = dp.Timestamp
 	dp.RawValue = nil
 	dp.SourceTimestamp = nil
+	dp.PublishTimestamp = nil
+	dp.LatencyMs = nil
+	dp.StalenessMs = nil
+	dp.Priority = 0
 	dp.Metadata = nil
 	return dp
 }
@@ -152,6 +172,9 @@ func ReleaseDataPoint(dp *DataPoint) {
 	dp.RawValue = nil
 	dp.Metadata = nil
 	dp.SourceTimestamp = nil
+	dp.PublishTimestamp = nil
+	dp.LatencyMs = nil
+	dp.StalenessMs = nil
 	dataPointPool.Put(dp)
 }
 
@@ -173,6 +196,38 @@ func (dp *DataPoint) WithSourceTimestamp(ts time.Time) *DataPoint {
 	return dp
 }
 
+// WithGatewayTimestamp sets the gateway timestamp and returns the DataPoint for chaining.
+func (dp *DataPoint) WithGatewayTimestamp(ts time.Time) *DataPoint {
+	dp.GatewayTimestamp = ts
+	return dp
+}
+
+// WithPublishTimestamp sets the publish timestamp and calculates latency.
+func (dp *DataPoint) WithPublishTimestamp(ts time.Time) *DataPoint {
+	dp.PublishTimestamp = &ts
+	latency := ts.Sub(dp.Timestamp).Milliseconds()
+	dp.LatencyMs = &latency
+	return dp
+}
+
+// WithPriority sets the QoS priority tier.
+func (dp *DataPoint) WithPriority(priority uint8) *DataPoint {
+	dp.Priority = priority
+	return dp
+}
+
+// CalculateStaleness calculates staleness based on expected poll interval.
+func (dp *DataPoint) CalculateStaleness(expectedInterval time.Duration) {
+	if expectedInterval <= 0 {
+		return
+	}
+	age := time.Since(dp.Timestamp)
+	if age > expectedInterval {
+		staleness := (age - expectedInterval).Milliseconds()
+		dp.StalenessMs = &staleness
+	}
+}
+
 // Reset clears the DataPoint for reuse.
 func (dp *DataPoint) Reset() {
 	dp.DeviceID = ""
@@ -184,6 +239,10 @@ func (dp *DataPoint) Reset() {
 	dp.Quality = ""
 	dp.Timestamp = time.Time{}
 	dp.SourceTimestamp = nil
+	dp.GatewayTimestamp = time.Time{}
+	dp.PublishTimestamp = nil
+	dp.LatencyMs = nil
+	dp.StalenessMs = nil
+	dp.Priority = 0
 	dp.Metadata = nil
 }
-

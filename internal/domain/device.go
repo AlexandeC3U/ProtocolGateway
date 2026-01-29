@@ -3,6 +3,7 @@
 package domain
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -66,6 +67,18 @@ type Device struct {
 
 	// UpdatedAt is when this device configuration was last modified
 	UpdatedAt time.Time `json:"updated_at" yaml:"updated_at"`
+
+	// ConfigVersion tracks configuration revisions for fleet management.
+	// Incremented on each configuration update.
+	ConfigVersion uint32 `json:"config_version,omitempty" yaml:"config_version,omitempty"`
+
+	// ActiveConfigVersion is the currently running configuration version.
+	// May differ from ConfigVersion during rolling updates.
+	ActiveConfigVersion uint32 `json:"active_config_version,omitempty" yaml:"active_config_version,omitempty"`
+
+	// LastKnownGoodVersion is the last configuration that worked successfully.
+	// Used for automatic rollback on failures.
+	LastKnownGoodVersion uint32 `json:"last_known_good_version,omitempty" yaml:"last_known_good_version,omitempty"`
 }
 
 // ConnectionConfig holds protocol-specific connection parameters.
@@ -181,6 +194,12 @@ func (d *Device) Validate() error {
 	}
 	if d.UNSPrefix == "" {
 		return ErrUNSPrefixRequired
+	}
+
+	for i := range d.Tags {
+		if err := d.Tags[i].ValidateForProtocol(d.Protocol); err != nil {
+			return fmt.Errorf("invalid tag %q for device %q: %w", d.Tags[i].ID, d.ID, err)
+		}
 	}
 	return nil
 }
