@@ -2,7 +2,7 @@
 
 ## Comprehensive Technical Reference
 
-**Version:** 2.0  
+**Version:** 2.1.1  
 **Classification:** Technical Architecture Specification  
 **Target Audience:** Software Architects, Senior Engineers, System Integrators
 
@@ -1691,6 +1691,71 @@ This comprehensive flowchart traces a complete polling cycle from timer tick to 
 │  │  └──────────────────────────────────────────────────────────────────┘   │   │
 │  │                                                                         │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Worker Pool Cycling: How 10 Workers Serve 100+ Devices
+
+A common misconception is that `WorkerCount` limits how many devices can be polled. In reality, workers **cycle through devices** rapidly—each device only holds a worker for the duration of its read operation (typically 10-100ms). This allows a small worker pool to efficiently serve many devices:
+
+```
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                    WORKER POOL CYCLING (10 workers, 100 devices)               │
+│                                                                                │
+│  Example: 100 devices, 3s poll interval, ~30ms per poll                        │
+│                                                                                │
+│                        Worker Pool (10 slots)                                  │
+│                    ┌───┬───┬───┬───┬───┬───┬───┬───┬───┬───┐                   │
+│  t=0ms   Start:    │D1 │D2 │D3 │D4 │D5 │D6 │D7 │D8 │D9 │D10│ ← 10 devices      │
+│                    └───┴───┴───┴───┴───┴───┴───┴───┴───┴───┘   start polling   │
+│                        │                                                       │
+│                        ▼ D1 finishes at 30ms, worker freed                     │
+│                    ┌───┬───┬───┬───┬───┬───┬───┬───┬───┬───┐                   │
+│  t=30ms            │D11│D2 │D3 │D4 │D5 │D6 │D7 │D8 │D9 │D10│ ← D11 takes       │
+│                    └───┴───┴───┴───┴───┴───┴───┴───┴───┴───┘   freed slot      │
+│                        │                                                       │
+│                        ▼ D2, D3 finish                                         │
+│                    ┌───┬───┬───┬───┬───┬───┬───┬───┬───┬───┐                   │
+│  t=35ms            │D11│D12│D13│D4 │D5 │D6 │D7 │D8 │D9 │D10│                   │
+│                    └───┴───┴───┴───┴───┴───┴───┴───┴───┴───┘                   │
+│                        │                                                       │
+│                        ▼ ... workers keep cycling through devices ...          │
+│                        │                                                       │
+│                    ┌───┬───┬───┬───┬───┬───┬───┬───┬───┬───┐                   │
+│  t=280ms           │D95│D96│D97│D98│D99│D100   │   │   │   │ ← Final devices   │
+│                    └───┴───┴───┴───┴───┴───┴───┴───┴───┴───┘   completing      │
+│                        │                                                       │
+│                        ▼ All 100 devices polled!                               │
+│                    ┌───┬───┬───┬───┬───┬───┬───┬───┬───┬───┐                   │
+│  t=300ms-3000ms    │   │   │   │   │   │   │   │   │   │   │ ← Workers idle    │
+│                    └───┴───┴───┴───┴───┴───┴───┴───┴───┴───┘   until next      │
+│                                                                  poll cycle    │
+│                                                                                │
+│  ─────────────────────────────────────────────────────────────────────────     │
+│  CAPACITY CALCULATION                                                          │
+│                                                                                │
+│    Total work per cycle:    100 devices × 30ms = 3,000ms                       │
+│    Worker capacity:         10 workers × 3,000ms interval = 30,000ms           │
+│    Utilization:             3,000 / 30,000 = 10% ← Plenty of headroom!         │
+│                                                                                │
+│    Formula: Required workers ≥ (devices × avg_poll_time) / poll_interval       │
+│                                                                                │
+│  ─────────────────────────────────────────────────────────────────────────     │
+│  WHEN BACK-PRESSURE KICKS IN                                                   │
+│                                                                                │
+│    If all workers are busy when a device's poll timer fires:                   │
+│    → Poll is SKIPPED (not queued indefinitely)                                 │
+│    → Metric incremented: polling_polls_skipped_total                           │
+│    → Device tries again at next interval                                       │
+│                                                                                │
+│  ─────────────────────────────────────────────────────────────────────────     │
+│  WORKER COUNT GUIDELINES                                                       │
+│                                                                                │
+│    < 50 devices, fast polls:        10 workers (default)                       │
+│    100-500 devices:                 20-50 workers                              │
+│    500+ devices or slow polls:      50-100 workers                             │
+│    Very slow devices (1s+ polls):   devices / 10 or more                       │
 │                                                                                │
 └────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -3471,5 +3536,5 @@ The architecture follows Clean Architecture principles with clear separation bet
 
 ---
 
-*Document Version: 2.0.0*
+*Document Version: 2.1.1*
 *Last Updated: January 2026*
