@@ -1,0 +1,76 @@
+# Binaries
+gateway.exe
+gateway
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Build output
+/bin/
+/dist/
+/build/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.html
+coverage.txt
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Dependency directories
+vendor/
+
+# IDE and editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Local environment
+.env
+.env.local
+.env.*.local
+*.local.yaml
+*.local.yml
+
+# Logs
+*.log
+logs/
+
+# Debug
+debug
+__debug_bin*
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Docker volumes (local dev)
+data/
+
+# Prometheus data (local dev)
+prometheus_data/
+
+# Secrets (never commit)
+*.pem
+*.key
+*.crt
+secrets/

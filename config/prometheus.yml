@@ -1,0 +1,62 @@
+# Prometheus configuration for Protocol Gateway
+# Documentation: https://prometheus.io/docs/prometheus/latest/configuration/configuration/
+
+global:
+  scrape_interval: 15s          # How often to scrape targets
+  evaluation_interval: 15s      # How often to evaluate rules
+  scrape_timeout: 10s           # Timeout for scraping
+
+  # Attach these labels to any time series or alerts when communicating with
+  # external systems (federation, remote storage, Alertmanager).
+  external_labels:
+    monitor: 'protocol-gateway'
+    environment: 'development'
+
+# Alertmanager configuration (optional - uncomment if using alerting)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#           - alertmanager:9093
+
+# Rule files for recording rules and alerts (optional)
+# rule_files:
+#   - "alerts/*.yml"
+#   - "recording_rules/*.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+
+  # Protocol Gateway metrics
+  - job_name: 'protocol-gateway'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['gateway:8080']
+        labels:
+          service: 'gateway'
+          component: 'core'
+    # Relabel instance to something more readable
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'protocol-gateway'
+
+  # EMQX MQTT Broker metrics (if enabled)
+  # EMQX exposes Prometheus metrics on port 18083
+  - job_name: 'emqx'
+    metrics_path: '/api/v5/prometheus/stats'
+    static_configs:
+      - targets: ['emqx:18083']
+        labels:
+          service: 'emqx'
+          component: 'mqtt-broker'
+    # Basic auth for EMQX API (default credentials)
+    basic_auth:
+      username: 'admin'
+      password: 'public'

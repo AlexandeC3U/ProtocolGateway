@@ -363,6 +363,11 @@ func (s *PollingService) pollDevice(dp *devicePoller) {
 			dp.lastError = err
 			dp.mu.Unlock()
 
+			// Record Prometheus skip metric
+			if s.metrics != nil {
+				s.metrics.RecordPollSkipped()
+			}
+
 			s.logger.Debug().
 				Err(err).
 				Str("device_id", dp.device.ID).
@@ -375,6 +380,11 @@ func (s *PollingService) pollDevice(dp *devicePoller) {
 		dp.mu.Lock()
 		dp.lastError = err
 		dp.mu.Unlock()
+
+		// Record Prometheus error metric
+		if s.metrics != nil {
+			s.metrics.RecordPollError(dp.device.ID, "read_error")
+		}
 
 		s.logger.Error().
 			Err(err).
@@ -442,6 +452,11 @@ func (s *PollingService) pollDevice(dp *devicePoller) {
 
 	// Record poll duration for metrics
 	duration := time.Since(startTime)
+
+	// Record Prometheus metrics
+	if s.metrics != nil {
+		s.metrics.RecordPollSuccess(dp.device.ID, string(dp.device.Protocol), duration.Seconds(), len(dataPoints))
+	}
 
 	// Log poll completion
 	s.logger.Debug().

@@ -256,6 +256,80 @@ healthcheck:
   timeout: 5s
   retries: 3
 ```
+
+## 7) Prometheus & Grafana Monitoring
+
+The docker-compose stack includes **Prometheus** for metrics collection and optionally **Grafana** for visualization.
+
+### Starting with Prometheus (default)
+
+Prometheus starts automatically with the stack:
+
+```bash
+docker compose up -d
+```
+
+Access Prometheus UI: `http://localhost:9090`
+
+### Starting with Grafana (optional)
+
+To include Grafana dashboards, use the `monitoring` profile:
+
+```bash
+docker compose --profile monitoring up -d
+```
+
+Access:
+- Prometheus: `http://localhost:9090`
+- Grafana: `http://localhost:3000` (login: `admin` / `admin`)
+
+### Verifying Prometheus Targets
+
+1. Open Prometheus UI: `http://localhost:9090`
+2. Go to **Status → Targets**
+3. Verify `protocol-gateway` target shows **UP**
+
+### Querying Metrics
+
+In the Prometheus UI, try these example queries:
+
+```promql
+# Total MQTT messages published
+gateway_mqtt_messages_published_total
+
+# Data points read (increasing counter)
+gateway_polling_points_read_total
+
+# Active connections by protocol
+gateway_connections_active
+
+# Poll success rate over last 5 minutes
+rate(gateway_polling_polls_total{status="success"}[5m])
+
+# Poll duration 95th percentile
+histogram_quantile(0.95, rate(gateway_polling_duration_seconds_bucket[5m]))
+
+# MQTT publish latency
+gateway_mqtt_publish_latency_seconds
+```
+
+### Prometheus Configuration
+
+The Prometheus configuration is in `config/prometheus.yml`. It scrapes:
+- **Gateway metrics** from `gateway:8080/metrics` every 15s
+- **EMQX metrics** from `emqx:18083` (if enabled)
+
+To modify scrape intervals or add alerting rules, edit this file and restart Prometheus.
+
+### Available Metrics Summary
+
+| Category | Metrics |
+|----------|---------|
+| **Connections** | `gateway_connections_active`, `gateway_connections_attempts_total`, `gateway_connections_errors_total`, `gateway_connections_latency_seconds` |
+| **Polling** | `gateway_polling_polls_total`, `gateway_polling_polls_skipped_total`, `gateway_polling_duration_seconds`, `gateway_polling_points_read_total`, `gateway_polling_points_published_total` |
+| **MQTT** | `gateway_mqtt_messages_published_total`, `gateway_mqtt_messages_failed_total`, `gateway_mqtt_buffer_size`, `gateway_mqtt_publish_latency_seconds`, `gateway_mqtt_reconnects_total` |
+| **Devices** | `gateway_devices_registered`, `gateway_devices_online`, `gateway_device_errors_total` |
+
 ## Notes / Troubleshooting
 
 - If you restart the stack and previously created devices don’t show up, ensure the gateway is using the same mounted `config/devices.yaml` (Compose does this by default).

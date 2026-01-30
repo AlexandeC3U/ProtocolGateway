@@ -104,6 +104,59 @@ services:
     restart: unless-stopped
 
   # ========================================
+  # Prometheus (Metrics Collection)
+  # ========================================
+  prometheus:
+    image: prom/prometheus:v2.50.1
+    container_name: protocol-gateway-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.enable-lifecycle'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - protocol-gateway-net
+    restart: unless-stopped
+
+  # ========================================
+  # Grafana (Optional - Metrics Visualization)
+  # ========================================
+  grafana:
+    image: grafana/grafana:10.3.3
+    container_name: protocol-gateway-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    networks:
+      - protocol-gateway-net
+    profiles:
+      - monitoring
+    restart: unless-stopped
+
+  # ========================================
   # MQTT Explorer (Optional - for debugging)
   # ========================================
   mqtt-explorer:
@@ -132,4 +185,6 @@ volumes:
   emqx-data:
   emqx-log:
   gateway-data:
+  prometheus-data:
+  grafana-data:
 

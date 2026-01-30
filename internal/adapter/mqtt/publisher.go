@@ -305,20 +305,34 @@ func (p *Publisher) publishRaw(ctx context.Context, topic string, payload []byte
 	case success := <-publishDone:
 		if !success {
 			p.stats.MessagesFailed.Add(1)
+			if p.metrics != nil {
+				p.metrics.RecordMQTTPublish(false, p.config.PublishTimeout.Seconds())
+			}
 			return fmt.Errorf("%w: publish timeout", domain.ErrMQTTPublishFailed)
 		}
 		if token.Error() != nil {
 			p.stats.MessagesFailed.Add(1)
+			if p.metrics != nil {
+				p.metrics.RecordMQTTPublish(false, 0)
+			}
 			return fmt.Errorf("%w: %v", domain.ErrMQTTPublishFailed, token.Error())
 		}
 	case <-ctx.Done():
 		p.stats.MessagesFailed.Add(1)
+		if p.metrics != nil {
+			p.metrics.RecordMQTTPublish(false, p.config.PublishTimeout.Seconds())
+		}
 		return fmt.Errorf("%w: %v", domain.ErrMQTTPublishFailed, ctx.Err())
 	}
 
 	p.stats.MessagesPublished.Add(1)
 	p.stats.BytesSent.Add(uint64(len(payload)))
 	p.recordTopicPublish(topic, len(payload))
+
+	// Record Prometheus metrics
+	if p.metrics != nil {
+		p.metrics.RecordMQTTPublish(true, 0) // TODO: measure actual latency
+	}
 
 	return nil
 }
