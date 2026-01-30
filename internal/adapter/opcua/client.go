@@ -10,9 +10,6 @@ import (
 	"io"
 	"math"
 	"math/rand/v2"
-	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gopcua/opcua"
@@ -20,105 +17,6 @@ import (
 	"github.com/nexus-edge/protocol-gateway/internal/domain"
 	"github.com/rs/zerolog"
 )
-
-// SessionState represents the OPC UA session state machine.
-type SessionState string
-
-const (
-	SessionStateDisconnected  SessionState = "disconnected"
-	SessionStateConnecting    SessionState = "connecting"
-	SessionStateSecureChannel SessionState = "secure_channel"
-	SessionStateActive        SessionState = "active"
-	SessionStateError         SessionState = "error"
-)
-
-// Client represents an OPC UA client connection to a single server.
-type Client struct {
-	config       ClientConfig
-	client       *opcua.Client
-	logger       zerolog.Logger
-	mu           sync.RWMutex
-	opMu         sync.Mutex // Serializes OPC UA operations for thread safety
-	connected    atomic.Bool
-	sessionState SessionState
-	lastError    error
-	lastUsed     time.Time
-	stats        *ClientStats
-	deviceID     string
-	nodeCache    map[string]*ua.NodeID // Cache parsed node IDs
-	nodeCacheMu  sync.RWMutex
-
-	// Consecutive failures for backoff reset
-	consecutiveFailures atomic.Int32
-}
-
-// ClientConfig holds configuration for an OPC UA client.
-type ClientConfig struct {
-	// EndpointURL is the OPC UA server endpoint (e.g., "opc.tcp://localhost:4840")
-	EndpointURL string
-
-	// SecurityPolicy specifies the security policy (None, Basic128Rsa15, Basic256, Basic256Sha256)
-	SecurityPolicy string
-
-	// SecurityMode specifies the security mode (None, Sign, SignAndEncrypt)
-	SecurityMode string
-
-	// AuthMode specifies authentication mode (Anonymous, UserName, Certificate)
-	AuthMode string
-
-	// Username for UserName authentication
-	Username string
-
-	// Password for UserName authentication
-	Password string
-
-	// CertificateFile path for certificate authentication
-	CertificateFile string
-
-	// PrivateKeyFile path for certificate authentication
-	PrivateKeyFile string
-
-	// Timeout is the connection and response timeout
-	Timeout time.Duration
-
-	// KeepAlive is the keep-alive interval
-	KeepAlive time.Duration
-
-	// MaxRetries is the number of retry attempts on transient failures
-	MaxRetries int
-
-	// RetryDelay is the base delay between retries (exponential backoff applied)
-	RetryDelay time.Duration
-
-	// RequestTimeout is the timeout for individual requests
-	RequestTimeout time.Duration
-
-	// SessionTimeout is the session timeout on the server
-	SessionTimeout time.Duration
-
-	// === Subscription Settings ===
-
-	// DefaultPublishingInterval is the default subscription publishing interval
-	DefaultPublishingInterval time.Duration
-
-	// DefaultSamplingInterval is the default monitored item sampling interval
-	DefaultSamplingInterval time.Duration
-
-	// DefaultQueueSize is the default monitored item queue size
-	DefaultQueueSize uint32
-}
-
-// ClientStats tracks client performance metrics.
-type ClientStats struct {
-	ReadCount         atomic.Uint64
-	WriteCount        atomic.Uint64
-	ErrorCount        atomic.Uint64
-	RetryCount        atomic.Uint64
-	SubscribeCount    atomic.Uint64
-	NotificationCount atomic.Uint64
-	TotalReadTime     atomic.Int64 // nanoseconds
-	TotalWriteTime    atomic.Int64 // nanoseconds
-}
 
 // NewClient creates a new OPC UA client with the given configuration.
 func NewClient(deviceID string, config ClientConfig, logger zerolog.Logger) (*Client, error) {
@@ -720,7 +618,7 @@ func (c *Client) processReadResult(result *ua.DataValue, tag *domain.Tag) *domai
 	value := c.variantToValue(result.Value, tag)
 
 	// Apply scaling and offset
-	scaledValue := c.applyScaling(value, tag)
+	scaledValue := applyScaling(value, tag)
 
 	dp := domain.NewDataPoint(
 		c.deviceID,
@@ -752,7 +650,7 @@ func (c *Client) variantToValue(v *ua.Variant, tag *domain.Tag) interface{} {
 // valueToVariant converts a Go value to an OPC UA variant.
 func (c *Client) valueToVariant(value interface{}, tag *domain.Tag) (*ua.Variant, error) {
 	// Reverse scaling if applied
-	actualValue := c.reverseScaling(value, tag)
+	actualValue := reverseScaling(value, tag)
 
 	// Convert based on target data type
 	switch tag.DataType {
@@ -874,34 +772,6 @@ func (c *Client) statusCodeToQuality(status ua.StatusCode) domain.Quality {
 	default:
 		return domain.QualityGood
 	}
-}
-
-// applyScaling applies scale factor and offset to the value.
-func (c *Client) applyScaling(value interface{}, tag *domain.Tag) interface{} {
-	if tag.ScaleFactor == 1.0 && tag.Offset == 0 {
-		return value
-	}
-
-	floatVal, ok := toFloat64(value)
-	if !ok {
-		return value
-	}
-
-	return floatVal*tag.ScaleFactor + tag.Offset
-}
-
-// reverseScaling reverses the scaling for write operations.
-func (c *Client) reverseScaling(value interface{}, tag *domain.Tag) interface{} {
-	if tag.ScaleFactor == 1.0 && tag.Offset == 0 {
-		return value
-	}
-
-	floatVal, ok := toFloat64(value)
-	if !ok {
-		return value
-	}
-
-	return (floatVal - tag.Offset) / tag.ScaleFactor
 }
 
 // getSecurityPolicy returns the OPC UA security policy URI.
@@ -1041,7 +911,7 @@ func (c *Client) DeviceID() string {
 	return c.deviceID
 }
 
-// Helper functions for type conversion
+// Helper function for string contains
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsRune(s, substr))
 }
@@ -1053,142 +923,6 @@ func containsRune(s, substr string) bool {
 		}
 	}
 	return false
-}
-
-func toBool(v interface{}) (bool, bool) {
-	switch val := v.(type) {
-	case bool:
-		return val, true
-	case int:
-		return val != 0, true
-	case int8:
-		return val != 0, true
-	case int16:
-		return val != 0, true
-	case int32:
-		return val != 0, true
-	case int64:
-		return val != 0, true
-	case uint:
-		return val != 0, true
-	case uint8:
-		return val != 0, true
-	case uint16:
-		return val != 0, true
-	case uint32:
-		return val != 0, true
-	case uint64:
-		return val != 0, true
-	case float32:
-		return val != 0, true
-	case float64:
-		return val != 0, true
-	case string:
-		// Handle common string representations of boolean values
-		switch strings.ToLower(strings.TrimSpace(val)) {
-		case "true", "1", "yes", "on":
-			return true, true
-		case "false", "0", "no", "off":
-			return false, true
-		default:
-			return false, false
-		}
-	default:
-		return false, false
-	}
-}
-
-func toInt64(v interface{}) (int64, bool) {
-	switch val := v.(type) {
-	case int:
-		return int64(val), true
-	case int8:
-		return int64(val), true
-	case int16:
-		return int64(val), true
-	case int32:
-		return int64(val), true
-	case int64:
-		return val, true
-	case uint:
-		return int64(val), true
-	case uint8:
-		return int64(val), true
-	case uint16:
-		return int64(val), true
-	case uint32:
-		return int64(val), true
-	case uint64:
-		return int64(val), true
-	case float32:
-		return int64(val), true
-	case float64:
-		return int64(val), true
-	default:
-		return 0, false
-	}
-}
-
-func toUint64(v interface{}) (uint64, bool) {
-	switch val := v.(type) {
-	case int:
-		return uint64(val), true
-	case int8:
-		return uint64(val), true
-	case int16:
-		return uint64(val), true
-	case int32:
-		return uint64(val), true
-	case int64:
-		return uint64(val), true
-	case uint:
-		return uint64(val), true
-	case uint8:
-		return uint64(val), true
-	case uint16:
-		return uint64(val), true
-	case uint32:
-		return uint64(val), true
-	case uint64:
-		return val, true
-	case float32:
-		return uint64(val), true
-	case float64:
-		return uint64(val), true
-	default:
-		return 0, false
-	}
-}
-
-func toFloat64(v interface{}) (float64, bool) {
-	switch val := v.(type) {
-	case int:
-		return float64(val), true
-	case int8:
-		return float64(val), true
-	case int16:
-		return float64(val), true
-	case int32:
-		return float64(val), true
-	case int64:
-		return float64(val), true
-	case uint:
-		return float64(val), true
-	case uint8:
-		return float64(val), true
-	case uint16:
-		return float64(val), true
-	case uint32:
-		return float64(val), true
-	case uint64:
-		return float64(val), true
-	case float32:
-		return float64(val), true
-	case float64:
-		return val, true
-	default:
-		return 0, false
-	}
 }
 
 // Unused imports guard - will be removed by compiler if not needed

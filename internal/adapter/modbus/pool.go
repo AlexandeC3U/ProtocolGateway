@@ -35,44 +35,6 @@ type pooledClient struct {
 	mu        sync.Mutex
 }
 
-// PoolConfig holds configuration for the connection pool.
-type PoolConfig struct {
-	// MaxConnections is the maximum number of concurrent connections
-	MaxConnections int
-
-	// IdleTimeout is how long to keep idle connections open
-	IdleTimeout time.Duration
-
-	// HealthCheckPeriod is how often to check connection health
-	HealthCheckPeriod time.Duration
-
-	// ConnectionTimeout is the timeout for establishing new connections
-	ConnectionTimeout time.Duration
-
-	// RetryAttempts is the number of retry attempts for failed operations
-	RetryAttempts int
-
-	// RetryDelay is the base delay between retries
-	RetryDelay time.Duration
-
-	// CircuitBreakerName is the name for the circuit breaker
-	CircuitBreakerName string
-}
-
-// DefaultPoolConfig returns a PoolConfig with sensible defaults.
-// MaxConnections defaults to 500 to support industrial-scale deployments (100-1000 devices).
-func DefaultPoolConfig() PoolConfig {
-	return PoolConfig{
-		MaxConnections:     500,
-		IdleTimeout:        5 * time.Minute,
-		HealthCheckPeriod:  30 * time.Second,
-		ConnectionTimeout:  10 * time.Second,
-		RetryAttempts:      3,
-		RetryDelay:         100 * time.Millisecond,
-		CircuitBreakerName: "modbus-pool",
-	}
-}
-
 // NewConnectionPool creates a new connection pool.
 func NewConnectionPool(config PoolConfig, logger zerolog.Logger, metricsReg *metrics.Registry) *ConnectionPool {
 	// Apply defaults - 500 to support industrial-scale deployments
@@ -674,14 +636,6 @@ func (p *ConnectionPool) Stats() PoolStats {
 	return stats
 }
 
-// PoolStats contains pool statistics.
-type PoolStats struct {
-	TotalConnections  int
-	ActiveConnections int
-	InUseConnections  int
-	MaxConnections    int
-}
-
 // HealthCheck implements the health.Checker interface.
 // With per-device circuit breakers, the pool is considered healthy
 // as long as the pool itself is operational (not all devices need to be healthy).
@@ -717,12 +671,4 @@ func (p *ConnectionPool) GetDeviceHealth(deviceID string) (DeviceHealth, bool) {
 		CircuitBreakerOpen: pc.breaker.State() == gobreaker.StateOpen,
 		LastError:          pc.lastError,
 	}, true
-}
-
-// DeviceHealth contains health information for a single device.
-type DeviceHealth struct {
-	DeviceID           string
-	Connected          bool
-	CircuitBreakerOpen bool
-	LastError          error
 }

@@ -339,6 +339,99 @@ Range-based batching implemented for holding/input registers but coils still rea
 
 ---
 
+## S7 Specific (Not Yet Implemented)
+
+### 13. Tag Write Aggregation (Batch Writes)
+**Priority**: Medium  
+**Complexity**: Medium  
+
+`WriteTags` currently loops per tag — consider batching writes when possible:
+- S7 supports multi-variable writes to same DB area
+- gos7 `AGWriteMulti` can combine multiple writes into single request
+- Reduces round trips significantly for bulk writes
+
+**Implementation**:
+```go
+// Group writes by DB number, then use AGWriteMulti
+func (c *Client) WriteTags(ctx context.Context, writes []TagWrite) []error {
+    groups := c.groupWritesByDB(writes)
+    for db, dbWrites := range groups {
+        // Build PDU with multiple items
+        client.AGWriteMulti(items...)
+    }
+}
+```
+
+---
+
+### 14. Connection TTL vs. Idle Timeout
+**Priority**: Medium  
+**Complexity**: Low  
+
+Add a max connection TTL (hard cap) in addition to `IdleTimeout`:
+- Prevents long-lived, stale sessions from living forever
+- Forces periodic reconnection even for active connections
+- Helps with PLC firmware that leaks resources over long sessions
+
+**Config addition**:
+```go
+type PoolConfig struct {
+    IdleTimeout   time.Duration // Current: close if unused
+    MaxTTL        time.Duration // New: hard cap on connection lifetime
+}
+```
+
+---
+
+### 15. Per-Device/Tag Metrics Exposure
+**Priority**: Low  
+**Complexity**: Medium  
+
+Currently only connection-level metrics are exposed. Add:
+- Gauge vector for per-device connection state
+- Counter vector for per-tag error rate
+- Histogram for per-device read/write latency
+
+**Example metrics**:
+```
+s7_device_connected{device_id="plc1"} 1
+s7_tag_errors_total{device_id="plc1", tag_id="temp"} 42
+s7_read_duration_seconds{device_id="plc1"} histogram
+```
+
+---
+
+### 16. Security Documentation & Validation
+**Priority**: Low  
+**Complexity**: Low  
+
+S7 protocol doesn't have native authentication (unlike OPC UA), but:
+- Document auth-less access risks for real deployments
+- Add config validation warnings for production mode
+- Consider S7comm+ password support (S7-1500)
+- Network segmentation recommendations
+
+---
+
+### 17. Per-Device Circuit Breaker Configuration
+**Priority**: Low  
+**Complexity**: Low  
+
+Currently all devices use the same default circuit breaker config. Enable per-device control:
+- Some PLCs may need more aggressive failure thresholds
+- Legacy PLCs may need longer recovery timeouts
+- Fast-fail for critical devices, lenient for non-critical
+
+**Config addition**:
+```go
+type Device struct {
+    Connection ConnectionConfig
+    CircuitBreaker *CircuitBreakerConfig // Optional per-device override
+}
+```
+
+---
+
 ## OPC UA Specific (Not Yet Implemented)
 
 ### 7. Full Subscription Implementation

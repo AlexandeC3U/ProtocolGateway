@@ -11,21 +11,62 @@
 ## Table of Contents
 
 1. [Executive Summary](#1-executive-summary)
+   - [1.1 Purpose](#11-purpose)
+   - [1.2 Key Capabilities](#12-key-capabilities)
+   - [1.3 Design Philosophy](#13-design-philosophy)
 2. [System Overview](#2-system-overview)
+   - [2.1 High-Level Architecture](#21-high-level-architecture)
+   - [2.2 Technology Stack](#22-technology-stack)
+   - [2.3 Dependency Graph](#23-dependency-graph)
 3. [Architectural Principles](#3-architectural-principles)
+   - [3.1 Clean Architecture Adherence](#31-clean-architecture-adherence)
+   - [3.2 Interface Segregation](#32-interface-segregation)
+   - [3.3 Dependency Inversion](#33-dependency-inversion)
 4. [Layer Architecture](#4-layer-architecture)
+   - [4.1 Domain Layer](#41-domain-layer-internaldomain)
+   - [4.2 Adapter Layer](#42-adapter-layer-internaladapter)
 5. [Domain Model](#5-domain-model)
+   - [5.1 Validation Logic](#51-validation-logic)
+   - [5.2 Error Taxonomy](#52-error-taxonomy)
 6. [Protocol Adapters](#6-protocol-adapters)
+   - [6.1 Modbus Adapter](#61-modbus-adapter)
+   - [6.2 OPC UA Adapter](#62-opc-ua-adapter)
+   - [6.3 S7 Adapter](#63-s7-adapter)
+   - [6.4 MQTT Publisher](#64-mqtt-publisher)
 7. [Connection Management](#7-connection-management)
+   - [7.1 Connection Pooling Strategies](#71-connection-pooling-strategies)
+   - [7.2 Idle Connection Management](#72-idle-connection-management)
 8. [Data Flow Architecture](#8-data-flow-architecture)
+   - [8.1 Read Path (Polling)](#81-read-path-polling)
+   - [8.2 Write Path (Commands)](#82-write-path-commands)
 9. [Resilience Patterns](#9-resilience-patterns)
+   - [9.1 Circuit Breaker Pattern](#91-circuit-breaker-pattern)
+   - [9.2 Retry with Exponential Backoff](#92-retry-with-exponential-backoff)
+   - [9.3 Graceful Degradation](#93-graceful-degradation)
+   - [9.4 Gateway Initialization and Startup](#94-gateway-initialization-and-startup)
 10. [Observability Infrastructure](#10-observability-infrastructure)
+    - [10.1 Metrics Architecture](#101-metrics-architecture)
+    - [10.2 Structured Logging](#102-structured-logging)
+    - [10.3 Health Check System](#103-health-check-system)
 11. [Configuration Management](#11-configuration-management)
-12. [Security Architecture](#12-security-architecture)
-13. [Deployment Architecture](#13-deployment-architecture)
-14. [Performance Engineering](#14-performance-engineering)
-15. [Standards Compliance](#15-standards-compliance)
-16. [API Reference](#16-api-reference)
+    - [11.1 Transport Security](#111-transport-security)
+    - [11.2 Credential Management](#112-credential-management)
+    - [11.3 Network Security](#113-network-security)
+12. [Deployment Architecture](#12-deployment-architecture)
+    - [12.1 Container Architecture](#121-container-architecture)
+    - [12.2 Docker Compose Architecture](#122-docker-compose-architecture)
+    - [12.3 Kubernetes Deployment (Reference)](#123-kubernetes-deployment-reference)
+13. [Performance Engineering](#13-performance-engineering)
+    - [13.1 Frontend Technology Stack](#131-frontend-technology-stack)
+    - [13.2 API Endpoints](#132-api-endpoints)
+14. [Standards Compliance](#14-standards-compliance)
+    - [14.1 Test Architecture](#141-test-architecture)
+    - [14.2 Simulator Infrastructure](#142-simulator-infrastructure)
+15. [API Reference](#15-api-reference)
+    - [15.1 Industrial Protocol Standards](#151-industrial-protocol-standards)
+    - [15.2 Unified Namespace (UNS) Architecture](#152-unified-namespace-uns-architecture)
+    - [15.3 Sparkplug B Compatibility](#153-sparkplug-b-compatibility)
+16. [Security Architecture](#16-security-architecture)
 17. [Appendices](#17-appendices)
 
 ---
@@ -761,6 +802,58 @@ The adapter layer provides concrete implementations for each industrial protocol
 │  │ └──────────┘ │  │ └──────────┘ │  │ └──────────┘ │  │ └──────────┘ │        │
 │  │              │  │              │  │              │  │              │        │
 │  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘        │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 4.2.2 Protocol Adapter Source File Structure
+
+Each protocol adapter follows a consistent file organization pattern to ensure maintainability and ease of navigation. The standardized structure separates concerns into dedicated files:
+
+```
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                    PROTOCOL ADAPTER FILE STRUCTURE                             │
+│                                                                                │
+│  internal/adapter/modbus/           internal/adapter/s7/                       │
+│  ├── types.go      ◄─────────────── ├── types.go      (Core type definitions)  │
+│  ├── client.go     ◄─────────────── ├── client.go     (Protocol client impl)   │
+│  ├── pool.go       ◄─────────────── ├── pool.go       (Connection pooling)     │
+│  ├── health.go     ◄─────────────── ├── health.go     (Health monitoring)      │
+│  └── conversion.go ◄─────────────── └── conversion.go (Data type conversion)   │
+│                                                                                │
+│  internal/adapter/opcua/            (OPC UA has additional protocol-specific   │
+│  ├── types.go                        files due to session/subscription model)  │
+│  ├── client.go                                                                 │
+│  ├── pool.go                                                                   │
+│  ├── health.go                                                                 │
+│  ├── conversion.go                                                             │
+│  ├── session.go     ◄─── Per-endpoint session management                       │
+│  ├── subscription.go◄─── OPC UA subscription/monitored items                   │
+│  └── loadshaping.go ◄─── Three-tier load control system                        │
+│                                                                                │
+│  FILE RESPONSIBILITIES:                                                        │
+│  ┌──────────────────────────────────────────────────────────────────────────┐  │
+│  │  types.go      │ Client struct, ClientConfig, ClientStats, TagDiagnostic │  │
+│  │                │ PoolConfig, PoolStats, DeviceHealth, BufferPool         │  │
+│  │────────────────┼─────────────────────────────────────────────────────────│  │
+│  │  client.go     │ Client constructor, ReadTags, ReadTag, WriteTag         │  │
+│  │                │ Connection management, protocol-specific operations     │  │
+│  │────────────────┼─────────────────────────────────────────────────────────│  │
+│  │  pool.go       │ Pool constructor, per-device client management          │  │
+│  │                │ Circuit breaker integration, idle connection reaping    │  │
+│  │────────────────┼─────────────────────────────────────────────────────────│  │
+│  │  health.go     │ GetTagDiagnostic, GetDeviceStats, GetAllDeviceHealth    │  │
+│  │                │ recordTagSuccess, recordTagError, diagnostics tracking  │  │
+│  │────────────────┼─────────────────────────────────────────────────────────│  │
+│  │  conversion.go │ parseValue, valueToBytes, applyScaling, reverseScaling  │  │
+│  │                │ Byte order handling, type coercion (toBool, toInt64...) │  │
+│  └──────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                │
+│  DESIGN RATIONALE:                                                             │
+│  • Separation of concerns enables targeted modifications                       │
+│  • Consistent structure across protocols reduces cognitive load                │
+│  • Health and conversion logic isolated for easier testing                     │
+│  • Types file provides single source of truth for data structures              │
 │                                                                                │
 └────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -1916,6 +2009,81 @@ The gateway maintains service availability through progressive degradation rathe
 │                                                                                │
 │  Key Principle: The gateway never crashes due to device/network failures.      │
 │  It maintains API availability for diagnostics and configuration.              │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 9.4 Gateway Initialization and Startup
+
+The gateway implements a robust startup sequence with protocol validation, readiness gating, and comprehensive logging. This ensures observability tools receive accurate data only after the system is fully initialized:
+
+```
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                        GATEWAY STARTUP SEQUENCE                                │
+│                                                                                │
+│  ┌─────────────────────────────────────────────────────────────────────────┐   │
+│  │  PHASE 1: INITIALIZATION                                                │   │
+│  │                                                                         │   │
+│  │  1. Load configuration (config.yaml, devices.yaml)                      │   │
+│  │  2. Initialize logging with configured level/format                     │   │
+│  │  3. Register Prometheus metrics                                         │   │
+│  │  4. Initialize protocol pools (Modbus, OPC UA, S7)                      │   │
+│  │  5. Initialize MQTT publisher                                           │   │
+│  │                                                                         │   │
+│  │  gatewayReady: false (metrics endpoint returns 503)                     │   │
+│  └─────────────────────────────────────────────────────────────────────────┘   │
+│                           │                                                    │
+│                           ▼                                                    │
+│  ┌─────────────────────────────────────────────────────────────────────────┐   │
+│  │  PHASE 2: DEVICE REGISTRATION (with Protocol Validation)                │   │
+│  │                                                                         │   │
+│  │  For each device in configuration:                                      │   │
+│  │    ├─ Validate device.Protocol against registered protocols             │   │
+│  │    │   • modbus-tcp, modbus-rtu → ModbusPool                            │   │
+│  │    │   • opcua                  → OPCUAPool                             │   │
+│  │    │   • s7                     → S7Pool                                │   │
+│  │    │   • <unknown>              → Log warning, skip device              │   │
+│  │    │                                                                    │   │
+│  │    ├─ If protocol supported:                                            │   │
+│  │    │   • Call pool.RegisterDevice(device)                               │   │
+│  │    │   • Track in registeredDevices count                               │   │
+│  │    │                                                                    │   │
+│  │    └─ If protocol not supported:                                        │   │
+│  │        • Return ErrProtocolNotSupported                                 │   │
+│  │        • Track in failedDevices or unsupportedProtocol count            │   │
+│  │                                                                         │   │
+│  │  Startup Logging:                                                       │   │
+│  │  INFO: "Gateway startup complete: 10 registered, 0 failed, 1 skipped"   │   │
+│  │  WARN: "Gateway starting in DEGRADED state" (if failures > 0)           │   │
+│  └─────────────────────────────────────────────────────────────────────────┘   │
+│                           │                                                    │
+│                           ▼                                                    │
+│  ┌─────────────────────────────────────────────────────────────────────────┐   │
+│  │  PHASE 3: SERVICE STARTUP                                               │   │
+│  │                                                                         │   │
+│  │  1. Start HTTP server (API, health probes, metrics)                     │   │
+│  │  2. Start polling service for registered devices                        │   │
+│  │  3. Start command handler for write operations                          │   │
+│  │  4. Set gatewayReady = true                                             │   │
+│  │                                                                         │   │
+│  │  Metrics endpoint now returns 200 OK with valid data                    │   │
+│  └─────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                │
+│  READINESS GUARD FOR METRICS:                                                  │
+│  ┌──────────────────────────────────────────────────────────────────────────┐  │
+│  │  GET /metrics                                                            │  │
+│  │                                                                          │  │
+│  │  if !gatewayReady.Load() {                                               │  │
+│  │      return 503 Service Unavailable                                      │  │
+│  │      body: "Gateway not ready - initialization in progress"              │  │
+│  │  }                                                                       │  │
+│  │                                                                          │  │
+│  │  // Normal Prometheus handler                                            │  │
+│  │  promhttp.Handler().ServeHTTP(w, r)                                      │  │
+│  │                                                                          │  │
+│  │  PURPOSE: Prevents Prometheus from scraping incomplete/invalid metrics   │  │
+│  │  during startup. Avoids false alerts from metrics systems.               │  │
+│  └──────────────────────────────────────────────────────────────────────────┘  │
 │                                                                                │
 └────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -3305,4 +3473,3 @@ The architecture follows Clean Architecture principles with clear separation bet
 
 *Document Version: 2.0.0*
 *Last Updated: January 2026*
-*Architecture Review: PhD-Level Industrial IoT Systems Analysis*

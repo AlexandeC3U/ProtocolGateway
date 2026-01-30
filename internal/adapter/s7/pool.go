@@ -24,13 +24,19 @@ type Pool struct {
 	healthCheck    time.Duration
 	stopChan       chan struct{}
 	wg             sync.WaitGroup
+	closed         bool
 }
 
 // clientEntry represents a pooled client with its circuit breaker.
 type clientEntry struct {
-	client  *Client
-	breaker *gobreaker.CircuitBreaker
-	lastUse time.Time
+	client          *Client
+	device          *domain.Device
+	breaker         *gobreaker.CircuitBreaker
+	lastUse         time.Time
+	lastError       error
+	connectFailures int
+	nextReconnectAt time.Time
+	mu              sync.Mutex
 }
 
 // PoolConfig holds configuration for the connection pool.
@@ -43,6 +49,9 @@ type PoolConfig struct {
 
 	// HealthCheckInterval is how often to check connection health
 	HealthCheckInterval time.Duration
+
+	// RetryDelay is the base delay for reconnection attempts
+	RetryDelay time.Duration
 
 	// CircuitBreakerConfig holds circuit breaker settings
 	CircuitBreaker CircuitBreakerConfig
@@ -77,6 +86,9 @@ func NewPool(config PoolConfig, logger zerolog.Logger, metricsReg *metrics.Regis
 	if config.HealthCheckInterval == 0 {
 		config.HealthCheckInterval = 30 * time.Second
 	}
+	if config.RetryDelay == 0 {
+		config.RetryDelay = 5 * time.Second
+	}
 
 	pool := &Pool{
 		clients:        make(map[string]*clientEntry),
@@ -91,6 +103,10 @@ func NewPool(config PoolConfig, logger zerolog.Logger, metricsReg *metrics.Regis
 	// Start background health check
 	pool.wg.Add(1)
 	go pool.healthCheckLoop()
+
+	// Start idle connection reaper
+	pool.wg.Add(1)
+	go pool.idleReaperLoop()
 
 	return pool
 }
@@ -141,6 +157,7 @@ func (p *Pool) GetOrCreate(ctx context.Context, device *domain.Device) (*Client,
 
 	p.clients[device.ID] = &clientEntry{
 		client:  client,
+		device:  device,
 		breaker: breaker,
 		lastUse: time.Now(),
 	}
@@ -349,6 +366,7 @@ func (p *Pool) Close() error {
 	p.wg.Wait()
 
 	p.mu.Lock()
+	p.closed = true
 	defer p.mu.Unlock()
 
 	var lastErr error
@@ -391,7 +409,7 @@ func (p *Pool) evictIdleConnection() bool {
 	return true
 }
 
-// healthCheckLoop periodically checks connection health.
+// healthCheckLoop periodically checks connection health and attempts reconnections.
 func (p *Pool) healthCheckLoop() {
 	defer p.wg.Done()
 
@@ -403,8 +421,25 @@ func (p *Pool) healthCheckLoop() {
 		case <-p.stopChan:
 			return
 		case <-ticker.C:
-			p.checkConnections()
+			p.checkConnectionsAndReconnect()
 			p.publishActiveConnectionMetrics()
+		}
+	}
+}
+
+// idleReaperLoop removes idle connections that haven't been used.
+func (p *Pool) idleReaperLoop() {
+	defer p.wg.Done()
+
+	ticker := time.NewTicker(p.idleTimeout / 2)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-p.stopChan:
+			return
+		case <-ticker.C:
+			p.reapIdleConnections()
 		}
 	}
 }
@@ -426,24 +461,75 @@ func (p *Pool) publishActiveConnectionMetrics() {
 	p.metrics.UpdateActiveConnectionsForProtocol(string(domain.ProtocolS7), active)
 }
 
-// checkConnections checks all connections and removes dead ones.
-func (p *Pool) checkConnections() {
+// checkConnectionsAndReconnect checks all connections and attempts to reconnect disconnected ones.
+func (p *Pool) checkConnectionsAndReconnect() {
+	// First pass: identify disconnected clients that need reconnection
+	p.mu.RLock()
+	type reconnectCandidate struct {
+		id    string
+		entry *clientEntry
+	}
+	candidates := make([]reconnectCandidate, 0)
+	for id, entry := range p.clients {
+		if !entry.client.IsConnected() {
+			candidates = append(candidates, reconnectCandidate{id: id, entry: entry})
+		}
+	}
+	p.mu.RUnlock()
+
+	// Second pass: attempt reconnection for each candidate
+	now := time.Now()
+	for _, c := range candidates {
+		c.entry.mu.Lock()
+
+		// Skip if circuit breaker is open
+		if c.entry.breaker.State() == gobreaker.StateOpen {
+			c.entry.mu.Unlock()
+			continue
+		}
+
+		// Check if we should attempt reconnection (with backoff)
+		if !c.entry.canAttemptReconnect(now) {
+			c.entry.mu.Unlock()
+			continue
+		}
+
+		p.logger.Debug().Str("device", c.id).Msg("Attempting to reconnect S7 client")
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		start := time.Now()
+		err := c.entry.client.Connect(ctx)
+		if p.metrics != nil {
+			p.metrics.RecordConnectionForProtocol(string(domain.ProtocolS7), err == nil, time.Since(start).Seconds())
+		}
+		cancel()
+
+		c.entry.recordConnectResult(now, err, 5*time.Second)
+
+		if err != nil {
+			p.logger.Warn().Err(err).Str("device", c.id).Msg("Failed to reconnect S7 client")
+		} else {
+			p.logger.Info().Str("device", c.id).Msg("Successfully reconnected S7 client")
+		}
+
+		c.entry.mu.Unlock()
+	}
+}
+
+// reapIdleConnections removes connections that have been idle too long.
+func (p *Pool) reapIdleConnections() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if p.closed {
+		return
+	}
 
 	now := time.Now()
 	toRemove := make([]string, 0)
 
 	for id, entry := range p.clients {
-		// Check if connection is idle for too long
 		if now.Sub(entry.lastUse) > p.idleTimeout {
-			toRemove = append(toRemove, id)
-			continue
-		}
-
-		// Check if connection is still alive
-		if !entry.client.IsConnected() {
-			p.logger.Warn().Str("device", id).Msg("S7 connection lost, removing from pool")
 			toRemove = append(toRemove, id)
 		}
 	}
@@ -452,74 +538,47 @@ func (p *Pool) checkConnections() {
 		entry := p.clients[id]
 		delete(p.clients, id)
 		entry.client.Disconnect()
+		p.logger.Debug().Str("device", id).Msg("Reaped idle S7 connection")
 	}
 
 	if len(toRemove) > 0 {
-		p.logger.Debug().Int("removed", len(toRemove)).Int("remaining", len(p.clients)).Msg("S7 pool cleanup complete")
+		p.logger.Debug().
+			Int("removed", len(toRemove)).
+			Int("remaining", len(p.clients)).
+			Msg("S7 idle reaper complete")
 	}
 }
 
-// GetStats returns pool statistics.
-func (p *Pool) GetStats() PoolStats {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+// =============================================================================
+// Client Entry Methods
+// =============================================================================
 
-	stats := PoolStats{
-		TotalConnections: len(p.clients),
-		MaxConnections:   p.maxConnections,
-		Devices:          make([]DeviceStats, 0, len(p.clients)),
-	}
-
-	for id, entry := range p.clients {
-		clientStats := entry.client.GetStats()
-		stats.Devices = append(stats.Devices, DeviceStats{
-			DeviceID:     id,
-			Connected:    entry.client.IsConnected(),
-			LastUsed:     entry.lastUse,
-			ReadCount:    clientStats["read_count"],
-			WriteCount:   clientStats["write_count"],
-			ErrorCount:   clientStats["error_count"],
-			BreakerState: entry.breaker.State().String(),
-		})
-	}
-
-	return stats
+func (ce *clientEntry) canAttemptReconnect(now time.Time) bool {
+	return ce.nextReconnectAt.IsZero() || !now.Before(ce.nextReconnectAt)
 }
 
-// PoolStats contains pool statistics.
-type PoolStats struct {
-	TotalConnections int
-	MaxConnections   int
-	Devices          []DeviceStats
-}
-
-// DeviceStats contains per-device statistics.
-type DeviceStats struct {
-	DeviceID     string
-	Connected    bool
-	LastUsed     time.Time
-	ReadCount    uint64
-	WriteCount   uint64
-	ErrorCount   uint64
-	BreakerState string
-}
-
-// HealthCheck performs a health check on the pool.
-func (p *Pool) HealthCheck(ctx context.Context) error {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	// Check if any clients are connected
-	for _, entry := range p.clients {
-		if entry.client.IsConnected() {
-			return nil
-		}
+func (ce *clientEntry) recordConnectResult(now time.Time, err error, baseDelay time.Duration) {
+	if err == nil {
+		ce.lastError = nil
+		ce.connectFailures = 0
+		ce.nextReconnectAt = time.Time{}
+		return
 	}
 
-	// No clients or all disconnected - check if pool is operational
-	if len(p.clients) == 0 {
-		return nil // Empty pool is healthy
+	ce.lastError = err
+	ce.connectFailures++
+
+	// Calculate exponential backoff
+	shift := ce.connectFailures - 1
+	if shift > 6 {
+		shift = 6
 	}
 
-	return domain.ErrConnectionClosed
+	delay := baseDelay * time.Duration(1<<uint(shift))
+	maxDelay := 5 * time.Minute
+	if delay > maxDelay {
+		delay = maxDelay
+	}
+
+	ce.nextReconnectAt = now.Add(delay)
 }

@@ -99,6 +99,11 @@ type S7Config struct {
 	ConnectionTimeout time.Duration `mapstructure:"connection_timeout"`
 	RetryAttempts     int           `mapstructure:"retry_attempts"`
 	RetryDelay        time.Duration `mapstructure:"retry_delay"`
+	// Circuit breaker configuration
+	CBMaxRequests      uint32        `mapstructure:"cb_max_requests"`
+	CBInterval         time.Duration `mapstructure:"cb_interval"`
+	CBTimeout          time.Duration `mapstructure:"cb_timeout"`
+	CBFailureThreshold uint32        `mapstructure:"cb_failure_threshold"`
 }
 
 // PollingConfig holds polling service configuration.
@@ -209,7 +214,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("s7.health_check_period", 30*time.Second)
 	v.SetDefault("s7.connection_timeout", 10*time.Second)
 	v.SetDefault("s7.retry_attempts", 3)
-	v.SetDefault("s7.retry_delay", 500*time.Millisecond)
+	v.SetDefault("s7.retry_delay", 5*time.Second)
+	// S7 circuit breaker defaults
+	v.SetDefault("s7.cb_max_requests", 3)
+	v.SetDefault("s7.cb_interval", 10*time.Second)
+	v.SetDefault("s7.cb_timeout", 30*time.Second)
+	v.SetDefault("s7.cb_failure_threshold", 5)
 
 	// Polling
 	v.SetDefault("polling.worker_count", 10)
@@ -269,4 +279,3 @@ func (c *Config) Validate() error {
 
 	return nil
 }
-

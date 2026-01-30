@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -29,6 +30,10 @@ const (
 	serviceName    = "protocol-gateway"
 	serviceVersion = "2.0.0"
 )
+
+// gatewayReady is set to true once all components are initialized and healthy.
+// Used to gate /metrics and other endpoints that shouldn't be scraped early.
+var gatewayReady atomic.Bool
 
 func main() {
 	// Initialize structured logger
@@ -130,6 +135,13 @@ func main() {
 		MaxConnections:      cfg.S7.MaxConnections,
 		IdleTimeout:         cfg.S7.IdleTimeout,
 		HealthCheckInterval: cfg.S7.HealthCheckPeriod,
+		RetryDelay:          cfg.S7.RetryDelay,
+		CircuitBreaker: s7.CircuitBreakerConfig{
+			MaxRequests:      cfg.S7.CBMaxRequests,
+			Interval:         cfg.S7.CBInterval,
+			Timeout:          cfg.S7.CBTimeout,
+			FailureThreshold: cfg.S7.CBFailureThreshold,
+		},
 	}, logger, metricsRegistry)
 	defer s7Pool.Close()
 
@@ -157,11 +169,28 @@ func main() {
 	deviceManager.SetCallbacks(
 		// On device add
 		func(device *domain.Device) error {
+			// Validate protocol is supported before registration
+			if _, exists := protocolManager.GetPool(device.Protocol); !exists {
+				logger.Warn().
+					Str("device_id", device.ID).
+					Str("protocol", string(device.Protocol)).
+					Msg("Device uses unsupported protocol, skipping registration")
+				return domain.ErrProtocolNotSupported
+			}
 			return pollingSvc.RegisterDevice(ctx, device)
 		},
-		// On device edit
+		// On device edit - use safe replacement pattern
 		func(device *domain.Device) error {
-			// Unregister old device and register new one
+			// Validate protocol is supported
+			if _, exists := protocolManager.GetPool(device.Protocol); !exists {
+				logger.Warn().
+					Str("device_id", device.ID).
+					Str("protocol", string(device.Protocol)).
+					Msg("Device uses unsupported protocol, skipping registration")
+				return domain.ErrProtocolNotSupported
+			}
+			// TODO: Implement ReplaceDevice() to preserve poll jitter, retry state, etc.
+			// For now, unregister and re-register (state is lost)
 			pollingSvc.UnregisterDevice(device.ID)
 			return pollingSvc.RegisterDevice(ctx, device)
 		},
@@ -179,19 +208,40 @@ func main() {
 	devices := deviceManager.GetDevices()
 	logger.Info().Int("count", len(devices)).Msg("Loaded device configurations")
 
-	// Count devices by protocol
+	// Count devices by protocol and track unsupported
 	protocolCounts := make(map[domain.Protocol]int)
+	unsupportedCount := 0
 	for _, device := range devices {
+		if _, exists := protocolManager.GetPool(device.Protocol); !exists {
+			unsupportedCount++
+			logger.Warn().
+				Str("device_id", device.ID).
+				Str("protocol", string(device.Protocol)).
+				Msg("Device configured with unsupported protocol")
+			continue
+		}
 		protocolCounts[device.Protocol]++
 	}
 	for protocol, count := range protocolCounts {
 		logger.Info().Str("protocol", string(protocol)).Int("devices", count).Msg("Protocol device count")
 	}
+	if unsupportedCount > 0 {
+		logger.Warn().Int("count", unsupportedCount).Msg("Devices with unsupported protocols skipped")
+	}
 
-	// Register devices with polling service
+	// Register devices with polling service (with protocol validation)
+	registeredCount := 0
+	failedCount := 0
 	for _, device := range devices {
+		// Skip unsupported protocols
+		if _, exists := protocolManager.GetPool(device.Protocol); !exists {
+			continue
+		}
 		if err := pollingSvc.RegisterDevice(ctx, device); err != nil {
 			logger.Error().Err(err).Str("device", device.ID).Msg("Failed to register device")
+			failedCount++
+		} else {
+			registeredCount++
 		}
 	}
 
@@ -239,7 +289,17 @@ func main() {
 	mux.HandleFunc("/health", healthChecker.HealthHandler)
 	mux.HandleFunc("/health/live", healthChecker.LivenessHandler)
 	mux.HandleFunc("/health/ready", healthChecker.ReadinessHandler)
-	mux.Handle("/metrics", promhttp.Handler())
+
+	// Metrics endpoint with readiness guard to prevent incomplete data during startup
+	metricsHandler := promhttp.Handler()
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		if !gatewayReady.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte("# Gateway is initializing, metrics not yet ready\n"))
+			return
+		}
+		metricsHandler.ServeHTTP(w, r)
+	})
 
 	// Add status endpoint
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
@@ -357,14 +417,28 @@ func main() {
 		}
 	}()
 
-	// Log successful startup
+	// Mark gateway as ready for metrics scraping
+	gatewayReady.Store(true)
+
+	// Log successful startup with detailed summary
 	logger.Info().
+		Int("registered_devices", registeredCount).
+		Int("failed_devices", failedCount).
+		Int("unsupported_protocol_devices", unsupportedCount).
 		Int("modbus_devices", protocolCounts[domain.ProtocolModbusTCP]+protocolCounts[domain.ProtocolModbusRTU]).
 		Int("opcua_devices", protocolCounts[domain.ProtocolOPCUA]).
 		Int("s7_devices", protocolCounts[domain.ProtocolS7]).
 		Int("http_port", cfg.HTTP.Port).
 		Str("mqtt_broker", cfg.MQTT.BrokerURL).
 		Msg("Protocol Gateway started successfully")
+
+	// Log degraded state warning if any devices failed registration
+	if failedCount > 0 || unsupportedCount > 0 {
+		logger.Warn().
+			Int("failed", failedCount).
+			Int("unsupported", unsupportedCount).
+			Msg("Gateway started in degraded state - some devices not registered")
+	}
 
 	// =============================================================
 	// Shutdown Handling

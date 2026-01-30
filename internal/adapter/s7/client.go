@@ -4,85 +4,16 @@ package s7
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
-	"math"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/nexus-edge/protocol-gateway/internal/domain"
 	"github.com/robinson/gos7"
 	"github.com/rs/zerolog"
 )
-
-// Client represents an S7 client connection to a single PLC.
-type Client struct {
-	config     ClientConfig
-	handler    *gos7.TCPClientHandler
-	client     gos7.Client
-	logger     zerolog.Logger
-	mu         sync.RWMutex
-	connected  atomic.Bool
-	lastError  error
-	lastUsed   time.Time
-	stats      *ClientStats
-	deviceID   string
-}
-
-// ClientConfig holds configuration for an S7 client.
-type ClientConfig struct {
-	// Address is the IP address of the PLC
-	Address string
-
-	// Port is the TCP port (default: 102 for ISO-on-TCP)
-	Port int
-
-	// Rack is the rack number of the PLC (usually 0)
-	Rack int
-
-	// Slot is the slot number of the CPU module
-	// S7-300/400: usually 2, S7-1200/1500: usually 0 or 1
-	Slot int
-
-	// Timeout is the connection and response timeout
-	Timeout time.Duration
-
-	// IdleTimeout is how long to keep idle connections open
-	IdleTimeout time.Duration
-
-	// MaxRetries is the number of retry attempts on transient failures
-	MaxRetries int
-
-	// RetryDelay is the base delay between retries (exponential backoff applied)
-	RetryDelay time.Duration
-
-	// PDUSize is the maximum PDU size (default: 480)
-	PDUSize int
-}
-
-// ClientStats tracks client performance metrics.
-type ClientStats struct {
-	ReadCount      atomic.Uint64
-	WriteCount     atomic.Uint64
-	ErrorCount     atomic.Uint64
-	RetryCount     atomic.Uint64
-	TotalReadTime  atomic.Int64 // nanoseconds
-	TotalWriteTime atomic.Int64 // nanoseconds
-}
-
-// S7AreaCode maps domain S7Area to gos7 area codes.
-var S7AreaCode = map[domain.S7Area]int{
-	domain.S7AreaDB: 0x84, // Data Blocks
-	domain.S7AreaM:  0x83, // Merkers
-	domain.S7AreaI:  0x81, // Inputs
-	domain.S7AreaQ:  0x82, // Outputs
-	domain.S7AreaT:  0x1D, // Timers
-	domain.S7AreaC:  0x1C, // Counters
-}
 
 // NewClient creates a new S7 client with the given configuration.
 func NewClient(deviceID string, config ClientConfig, logger zerolog.Logger) (*Client, error) {
@@ -111,11 +42,12 @@ func NewClient(deviceID string, config ClientConfig, logger zerolog.Logger) (*Cl
 	}
 
 	c := &Client{
-		config:   config,
-		logger:   logger.With().Str("device_id", deviceID).Str("address", config.Address).Logger(),
-		stats:    &ClientStats{},
-		deviceID: deviceID,
-		lastUsed: time.Now(),
+		config:         config,
+		logger:         logger.With().Str("device_id", deviceID).Str("address", config.Address).Logger(),
+		stats:          &ClientStats{},
+		deviceID:       deviceID,
+		lastUsed:       time.Now(),
+		tagDiagnostics: make(map[string]*TagDiagnostic),
 	}
 
 	return c, nil
@@ -205,6 +137,7 @@ func (c *Client) ReadTag(ctx context.Context, tag *domain.Tag) (*domain.DataPoin
 	c.mu.Unlock()
 
 	if !c.connected.Load() {
+		c.recordTagError(tag.ID, domain.ErrConnectionClosed)
 		return nil, domain.ErrConnectionClosed
 	}
 
@@ -212,6 +145,8 @@ func (c *Client) ReadTag(ctx context.Context, tag *domain.Tag) (*domain.DataPoin
 	area, dbNumber, offset, bitOffset, err := c.parseTagAddress(tag)
 	if err != nil {
 		c.stats.ErrorCount.Add(1)
+		c.recordTagError(tag.ID, err)
+		c.consecutiveFailures.Add(1)
 		return c.createErrorDataPoint(tag, err), err
 	}
 
@@ -229,6 +164,7 @@ func (c *Client) ReadTag(ctx context.Context, tag *domain.Tag) (*domain.DataPoin
 
 			select {
 			case <-ctx.Done():
+				c.recordTagError(tag.ID, ctx.Err())
 				return nil, ctx.Err()
 			case <-time.After(delay):
 			}
@@ -242,6 +178,8 @@ func (c *Client) ReadTag(ctx context.Context, tag *domain.Tag) (*domain.DataPoin
 		// Check if error is retryable
 		if !c.isRetryableError(err) {
 			c.stats.ErrorCount.Add(1)
+			c.recordTagError(tag.ID, err)
+			c.consecutiveFailures.Add(1)
 			return c.createErrorDataPoint(tag, err), err
 		}
 
@@ -254,9 +192,14 @@ func (c *Client) ReadTag(ctx context.Context, tag *domain.Tag) (*domain.DataPoin
 
 	if err != nil {
 		c.stats.ErrorCount.Add(1)
+		c.recordTagError(tag.ID, err)
+		c.consecutiveFailures.Add(1)
 		return c.createErrorDataPoint(tag, err), err
 	}
 
+	// Success - reset consecutive failures and record success
+	c.consecutiveFailures.Store(0)
+	c.recordTagSuccess(tag.ID)
 	c.stats.ReadCount.Add(1)
 	return dp, nil
 }
@@ -310,18 +253,23 @@ func (c *Client) WriteTag(ctx context.Context, tag *domain.Tag, value interface{
 	c.mu.Unlock()
 
 	if !c.connected.Load() {
+		c.recordTagError(tag.ID, domain.ErrConnectionClosed)
 		return domain.ErrConnectionClosed
 	}
 
 	// Check if tag is writable
 	if !c.isTagWritable(tag) {
-		return fmt.Errorf("%w: tag %s", domain.ErrTagNotWritable, tag.ID)
+		err := fmt.Errorf("%w: tag %s", domain.ErrTagNotWritable, tag.ID)
+		c.recordTagError(tag.ID, err)
+		return err
 	}
 
 	// Parse tag address
 	area, dbNumber, offset, bitOffset, err := c.parseTagAddress(tag)
 	if err != nil {
 		c.stats.ErrorCount.Add(1)
+		c.recordTagError(tag.ID, err)
+		c.consecutiveFailures.Add(1)
 		return err
 	}
 
@@ -337,6 +285,7 @@ func (c *Client) WriteTag(ctx context.Context, tag *domain.Tag, value interface{
 
 			select {
 			case <-ctx.Done():
+				c.recordTagError(tag.ID, ctx.Err())
 				return ctx.Err()
 			case <-time.After(delay):
 			}
@@ -350,6 +299,8 @@ func (c *Client) WriteTag(ctx context.Context, tag *domain.Tag, value interface{
 		// Check if error is retryable
 		if !c.isRetryableError(err) {
 			c.stats.ErrorCount.Add(1)
+			c.recordTagError(tag.ID, err)
+			c.consecutiveFailures.Add(1)
 			return err
 		}
 
@@ -362,9 +313,14 @@ func (c *Client) WriteTag(ctx context.Context, tag *domain.Tag, value interface{
 
 	if err != nil {
 		c.stats.ErrorCount.Add(1)
+		c.recordTagError(tag.ID, err)
+		c.consecutiveFailures.Add(1)
 		return err
 	}
 
+	// Success - reset consecutive failures and record success
+	c.consecutiveFailures.Store(0)
+	c.recordTagSuccess(tag.ID)
 	c.stats.WriteCount.Add(1)
 	c.logger.Debug().
 		Str("tag", tag.ID).
@@ -375,6 +331,7 @@ func (c *Client) WriteTag(ctx context.Context, tag *domain.Tag, value interface{
 }
 
 // readData performs the actual S7 read operation.
+// Uses opMu to serialize operations - gos7 client is NOT thread-safe.
 func (c *Client) readData(tag *domain.Tag, area domain.S7Area, dbNumber, offset, bitOffset int) (*domain.DataPoint, error) {
 	c.mu.RLock()
 	client := c.client
@@ -384,9 +341,14 @@ func (c *Client) readData(tag *domain.Tag, area domain.S7Area, dbNumber, offset,
 		return nil, domain.ErrConnectionClosed
 	}
 
+	// Serialize S7 operations to prevent protocol corruption
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+
 	// Calculate bytes to read based on data type
 	byteCount := c.getByteCount(tag.DataType)
-	buffer := make([]byte, byteCount)
+	buffer := BufferPool.Get(byteCount)
+	defer BufferPool.Put(buffer)
 
 	// Get the S7 area code
 	areaCode, ok := S7AreaCode[area]
@@ -432,6 +394,7 @@ func (c *Client) readData(tag *domain.Tag, area domain.S7Area, dbNumber, offset,
 }
 
 // writeData performs the actual S7 write operation.
+// Uses opMu to serialize operations - gos7 client is NOT thread-safe.
 func (c *Client) writeData(tag *domain.Tag, area domain.S7Area, dbNumber, offset, bitOffset int, value interface{}) error {
 	c.mu.RLock()
 	client := c.client
@@ -441,11 +404,16 @@ func (c *Client) writeData(tag *domain.Tag, area domain.S7Area, dbNumber, offset
 		return domain.ErrConnectionClosed
 	}
 
+	// Serialize S7 operations to prevent protocol corruption
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+
 	// Convert value to bytes
 	buffer, err := c.valueToBytes(value, tag, bitOffset)
 	if err != nil {
 		return err
 	}
+	defer BufferPool.Put(buffer) // Return buffer to pool after use
 
 	// Write to PLC
 	switch area {
@@ -548,212 +516,6 @@ func (c *Client) parseSymbolicAddress(address string) (domain.S7Area, int, int, 
 	return "", 0, 0, 0, fmt.Errorf("%w: %s", domain.ErrS7InvalidAddress, address)
 }
 
-// parseValue converts raw bytes to a typed value based on the tag's data type.
-func (c *Client) parseValue(data []byte, tag *domain.Tag, bitOffset int) (interface{}, error) {
-	if len(data) == 0 {
-		return nil, domain.ErrInvalidDataLength
-	}
-
-	switch tag.DataType {
-	case domain.DataTypeBool:
-		if len(data) < 1 {
-			return nil, domain.ErrInvalidDataLength
-		}
-		return (data[0] & (1 << bitOffset)) != 0, nil
-
-	case domain.DataTypeInt16:
-		if len(data) < 2 {
-			return nil, domain.ErrInvalidDataLength
-		}
-		return int16(binary.BigEndian.Uint16(data)), nil
-
-	case domain.DataTypeUInt16:
-		if len(data) < 2 {
-			return nil, domain.ErrInvalidDataLength
-		}
-		return binary.BigEndian.Uint16(data), nil
-
-	case domain.DataTypeInt32:
-		if len(data) < 4 {
-			return nil, domain.ErrInvalidDataLength
-		}
-		return int32(binary.BigEndian.Uint32(data)), nil
-
-	case domain.DataTypeUInt32:
-		if len(data) < 4 {
-			return nil, domain.ErrInvalidDataLength
-		}
-		return binary.BigEndian.Uint32(data), nil
-
-	case domain.DataTypeInt64:
-		if len(data) < 8 {
-			return nil, domain.ErrInvalidDataLength
-		}
-		return int64(binary.BigEndian.Uint64(data)), nil
-
-	case domain.DataTypeUInt64:
-		if len(data) < 8 {
-			return nil, domain.ErrInvalidDataLength
-		}
-		return binary.BigEndian.Uint64(data), nil
-
-	case domain.DataTypeFloat32:
-		if len(data) < 4 {
-			return nil, domain.ErrInvalidDataLength
-		}
-		bits := binary.BigEndian.Uint32(data)
-		return math.Float32frombits(bits), nil
-
-	case domain.DataTypeFloat64:
-		if len(data) < 8 {
-			return nil, domain.ErrInvalidDataLength
-		}
-		bits := binary.BigEndian.Uint64(data)
-		return math.Float64frombits(bits), nil
-
-	default:
-		return nil, domain.ErrInvalidDataType
-	}
-}
-
-// valueToBytes converts a value to bytes for writing.
-func (c *Client) valueToBytes(value interface{}, tag *domain.Tag, bitOffset int) ([]byte, error) {
-	// Reverse scaling if applied
-	actualValue := c.reverseScaling(value, tag)
-
-	switch tag.DataType {
-	case domain.DataTypeBool:
-		b, ok := toBool(actualValue)
-		if !ok {
-			return nil, fmt.Errorf("%w: cannot convert %T to bool", domain.ErrInvalidWriteValue, value)
-		}
-		data := make([]byte, 1)
-		if b {
-			data[0] = 1 << bitOffset
-		}
-		return data, nil
-
-	case domain.DataTypeInt16:
-		i, ok := toInt64(actualValue)
-		if !ok {
-			return nil, fmt.Errorf("%w: cannot convert %T to int16", domain.ErrInvalidWriteValue, value)
-		}
-		data := make([]byte, 2)
-		binary.BigEndian.PutUint16(data, uint16(int16(i)))
-		return data, nil
-
-	case domain.DataTypeUInt16:
-		i, ok := toInt64(actualValue)
-		if !ok {
-			return nil, fmt.Errorf("%w: cannot convert %T to uint16", domain.ErrInvalidWriteValue, value)
-		}
-		data := make([]byte, 2)
-		binary.BigEndian.PutUint16(data, uint16(i))
-		return data, nil
-
-	case domain.DataTypeInt32:
-		i, ok := toInt64(actualValue)
-		if !ok {
-			return nil, fmt.Errorf("%w: cannot convert %T to int32", domain.ErrInvalidWriteValue, value)
-		}
-		data := make([]byte, 4)
-		binary.BigEndian.PutUint32(data, uint32(int32(i)))
-		return data, nil
-
-	case domain.DataTypeUInt32:
-		i, ok := toInt64(actualValue)
-		if !ok {
-			return nil, fmt.Errorf("%w: cannot convert %T to uint32", domain.ErrInvalidWriteValue, value)
-		}
-		data := make([]byte, 4)
-		binary.BigEndian.PutUint32(data, uint32(i))
-		return data, nil
-
-	case domain.DataTypeInt64:
-		i, ok := toInt64(actualValue)
-		if !ok {
-			return nil, fmt.Errorf("%w: cannot convert %T to int64", domain.ErrInvalidWriteValue, value)
-		}
-		data := make([]byte, 8)
-		binary.BigEndian.PutUint64(data, uint64(i))
-		return data, nil
-
-	case domain.DataTypeUInt64:
-		i, ok := toUint64(actualValue)
-		if !ok {
-			return nil, fmt.Errorf("%w: cannot convert %T to uint64", domain.ErrInvalidWriteValue, value)
-		}
-		data := make([]byte, 8)
-		binary.BigEndian.PutUint64(data, i)
-		return data, nil
-
-	case domain.DataTypeFloat32:
-		f, ok := toFloat64(actualValue)
-		if !ok {
-			return nil, fmt.Errorf("%w: cannot convert %T to float32", domain.ErrInvalidWriteValue, value)
-		}
-		data := make([]byte, 4)
-		binary.BigEndian.PutUint32(data, math.Float32bits(float32(f)))
-		return data, nil
-
-	case domain.DataTypeFloat64:
-		f, ok := toFloat64(actualValue)
-		if !ok {
-			return nil, fmt.Errorf("%w: cannot convert %T to float64", domain.ErrInvalidWriteValue, value)
-		}
-		data := make([]byte, 8)
-		binary.BigEndian.PutUint64(data, math.Float64bits(f))
-		return data, nil
-
-	default:
-		return nil, fmt.Errorf("%w: unsupported data type %s", domain.ErrInvalidDataType, tag.DataType)
-	}
-}
-
-// getByteCount returns the number of bytes needed for a data type.
-func (c *Client) getByteCount(dataType domain.DataType) int {
-	switch dataType {
-	case domain.DataTypeBool:
-		return 1
-	case domain.DataTypeInt16, domain.DataTypeUInt16:
-		return 2
-	case domain.DataTypeInt32, domain.DataTypeUInt32, domain.DataTypeFloat32:
-		return 4
-	case domain.DataTypeInt64, domain.DataTypeUInt64, domain.DataTypeFloat64:
-		return 8
-	default:
-		return 1
-	}
-}
-
-// applyScaling applies scale factor and offset to the value.
-func (c *Client) applyScaling(value interface{}, tag *domain.Tag) interface{} {
-	if tag.ScaleFactor == 1.0 && tag.Offset == 0 {
-		return value
-	}
-
-	floatVal, ok := toFloat64(value)
-	if !ok {
-		return value
-	}
-
-	return floatVal*tag.ScaleFactor + tag.Offset
-}
-
-// reverseScaling reverses the scaling for write operations.
-func (c *Client) reverseScaling(value interface{}, tag *domain.Tag) interface{} {
-	if tag.ScaleFactor == 1.0 && tag.Offset == 0 {
-		return value
-	}
-
-	floatVal, ok := toFloat64(value)
-	if !ok {
-		return value
-	}
-
-	return (floatVal - tag.Offset) / tag.ScaleFactor
-}
-
 // groupTagsByArea groups tags by S7 memory area for efficient batch reads.
 func (c *Client) groupTagsByArea(tags []*domain.Tag) map[domain.S7Area][]*domain.Tag {
 	groups := make(map[domain.S7Area][]*domain.Tag)
@@ -848,149 +610,17 @@ func (c *Client) isConnectionError(err error) bool {
 
 // reconnect attempts to re-establish the connection.
 func (c *Client) reconnect(ctx context.Context) {
+	c.stats.ReconnectCount.Add(1)
 	c.Disconnect()
 	if err := c.Connect(ctx); err != nil {
+		c.mu.Lock()
+		c.lastError = err
+		c.mu.Unlock()
 		c.logger.Error().Err(err).Msg("Failed to reconnect to S7 PLC")
+	} else {
+		c.mu.Lock()
+		c.lastError = nil
+		c.mu.Unlock()
+		c.logger.Info().Msg("Reconnected to S7 PLC")
 	}
 }
-
-// GetStats returns the client statistics.
-func (c *Client) GetStats() map[string]uint64 {
-	return map[string]uint64{
-		"read_count":       c.stats.ReadCount.Load(),
-		"write_count":      c.stats.WriteCount.Load(),
-		"error_count":      c.stats.ErrorCount.Load(),
-		"retry_count":      c.stats.RetryCount.Load(),
-		"total_read_ns":    uint64(c.stats.TotalReadTime.Load()),
-		"total_write_ns":   uint64(c.stats.TotalWriteTime.Load()),
-	}
-}
-
-// GetStatsStruct returns the raw stats struct for direct access.
-func (c *Client) GetStatsStruct() *ClientStats {
-	return c.stats
-}
-
-// LastUsed returns when the client was last used.
-func (c *Client) LastUsed() time.Time {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.lastUsed
-}
-
-// DeviceID returns the device ID this client is connected to.
-func (c *Client) DeviceID() string {
-	return c.deviceID
-}
-
-// Helper functions for type conversion
-func toBool(v interface{}) (bool, bool) {
-	switch val := v.(type) {
-	case bool:
-		return val, true
-	case int, int8, int16, int32, int64:
-		return val != 0, true
-	case uint, uint8, uint16, uint32, uint64:
-		return val != 0, true
-	case float32:
-		return val != 0, true
-	case float64:
-		return val != 0, true
-	default:
-		return false, false
-	}
-}
-
-func toInt64(v interface{}) (int64, bool) {
-	switch val := v.(type) {
-	case int:
-		return int64(val), true
-	case int8:
-		return int64(val), true
-	case int16:
-		return int64(val), true
-	case int32:
-		return int64(val), true
-	case int64:
-		return val, true
-	case uint:
-		return int64(val), true
-	case uint8:
-		return int64(val), true
-	case uint16:
-		return int64(val), true
-	case uint32:
-		return int64(val), true
-	case uint64:
-		return int64(val), true
-	case float32:
-		return int64(val), true
-	case float64:
-		return int64(val), true
-	default:
-		return 0, false
-	}
-}
-
-func toUint64(v interface{}) (uint64, bool) {
-	switch val := v.(type) {
-	case int:
-		return uint64(val), true
-	case int8:
-		return uint64(val), true
-	case int16:
-		return uint64(val), true
-	case int32:
-		return uint64(val), true
-	case int64:
-		return uint64(val), true
-	case uint:
-		return uint64(val), true
-	case uint8:
-		return uint64(val), true
-	case uint16:
-		return uint64(val), true
-	case uint32:
-		return uint64(val), true
-	case uint64:
-		return val, true
-	case float32:
-		return uint64(val), true
-	case float64:
-		return uint64(val), true
-	default:
-		return 0, false
-	}
-}
-
-func toFloat64(v interface{}) (float64, bool) {
-	switch val := v.(type) {
-	case int:
-		return float64(val), true
-	case int8:
-		return float64(val), true
-	case int16:
-		return float64(val), true
-	case int32:
-		return float64(val), true
-	case int64:
-		return float64(val), true
-	case uint:
-		return float64(val), true
-	case uint8:
-		return float64(val), true
-	case uint16:
-		return float64(val), true
-	case uint32:
-		return float64(val), true
-	case uint64:
-		return float64(val), true
-	case float32:
-		return float64(val), true
-	case float64:
-		return val, true
-	default:
-		return 0, false
-	}
-}
-

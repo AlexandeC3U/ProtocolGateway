@@ -98,8 +98,22 @@ func LoadDevices(path string) ([]*domain.Device, error) {
 		return nil, fmt.Errorf("failed to parse devices file: %w", err)
 	}
 
+	// Track seen IDs to detect duplicates
+	seenIDs := make(map[string]int)
 	devices := make([]*domain.Device, 0, len(file.Devices))
-	for _, dc := range file.Devices {
+
+	for idx, dc := range file.Devices {
+		// Check for duplicate IDs
+		if prevIdx, exists := seenIDs[dc.ID]; exists {
+			return nil, fmt.Errorf("duplicate device ID '%s' at index %d (first seen at index %d)", dc.ID, idx, prevIdx)
+		}
+		seenIDs[dc.ID] = idx
+
+		// Validate protocol-specific connection requirements
+		if err := validateConnectionConfig(dc); err != nil {
+			return nil, fmt.Errorf("error in device %s: %w", dc.ID, err)
+		}
+
 		device, err := convertDeviceConfig(dc)
 		if err != nil {
 			return nil, fmt.Errorf("error in device %s: %w", dc.ID, err)
@@ -108,6 +122,45 @@ func LoadDevices(path string) ([]*domain.Device, error) {
 	}
 
 	return devices, nil
+}
+
+// validateConnectionConfig validates protocol-specific connection requirements.
+func validateConnectionConfig(dc DeviceConfig) error {
+	protocol := domain.Protocol(dc.Protocol)
+
+	switch protocol {
+	case domain.ProtocolModbusTCP, domain.ProtocolModbusRTU:
+		if dc.Connection.Host == "" {
+			return fmt.Errorf("modbus device requires host")
+		}
+		if dc.Connection.Port == 0 {
+			return fmt.Errorf("modbus device requires port")
+		}
+		if dc.Connection.SlaveID < 1 || dc.Connection.SlaveID > 247 {
+			return fmt.Errorf("modbus slave_id must be between 1 and 247, got %d", dc.Connection.SlaveID)
+		}
+
+	case domain.ProtocolOPCUA:
+		if dc.Connection.OPCEndpointURL == "" {
+			return fmt.Errorf("OPC UA device requires opc_endpoint_url")
+		}
+
+	case domain.ProtocolS7:
+		if dc.Connection.Host == "" {
+			return fmt.Errorf("S7 device requires host")
+		}
+		if dc.Connection.S7Rack < 0 {
+			return fmt.Errorf("S7 rack must be non-negative")
+		}
+		if dc.Connection.S7Slot < 0 {
+			return fmt.Errorf("S7 slot must be non-negative")
+		}
+
+	default:
+		// Unknown protocol - let domain validation handle it
+	}
+
+	return nil
 }
 
 // convertDeviceConfig converts a DeviceConfig to a domain.Device.
