@@ -42,29 +42,144 @@ dev:
 # Run tests
 test:
 	@echo "Running tests..."
-	$(GOTEST) -v -race -short ./...
+	$(GOTEST) -v -short ./...
+
+# Run tests with race detection (requires CGO_ENABLED=1)
+test-race:
+	@echo "Running tests with race detection..."
+	CGO_ENABLED=1 $(GOTEST) -v -race -short ./...
 
 # Run tests with coverage
 test-cover:
 	@echo "Running tests with coverage..."
-	$(GOTEST) -v -race -coverprofile=coverage.out -covermode=atomic ./...
+	$(GOTEST) -v -coverprofile=coverage.out -covermode=atomic ./...
 	$(GO) tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report: coverage.html"
 
 # Run integration tests
 test-integration:
 	@echo "Running integration tests..."
-	$(GOTEST) -v -race -tags=integration ./...
+	$(GOTEST) -v -tags=integration ./...
 
 # Run benchmarks
 bench:
 	@echo "Running benchmarks..."
 	$(GOTEST) -bench=. -benchmem ./...
 
+# Run benchmarks with comparison output
+bench-compare:
+	@echo "Running benchmarks with comparison..."
+	$(GOTEST) -bench=. -benchmem -count=5 ./... | tee bench.txt
+
 # Lint the code
 lint:
 	@echo "Linting..."
 	$(GOLINT) run ./...
+
+# =============================================================================
+# Extended Test Targets
+# =============================================================================
+
+# Run unit tests only (from testing/unit/)
+test-unit:
+	@echo "Running unit tests..."
+	$(GOTEST) -v -race ./testing/unit/...
+
+# Run all tests with verbose output
+test-verbose:
+	@echo "Running all tests (verbose)..."
+	$(GOTEST) -v -race ./...
+
+# Run tests for a specific package
+test-pkg:
+	@echo "Running tests for package: $(PKG)"
+	$(GOTEST) -v -race ./$(PKG)/...
+
+# Run fuzz tests (limited time)
+test-fuzz:
+	@echo "Running fuzz tests (30s each)..."
+	$(GOTEST) -fuzz=Fuzz -fuzztime=30s ./testing/fuzz/...
+
+# Run fuzz tests (extended)
+test-fuzz-long:
+	@echo "Running fuzz tests (5m each)..."
+	$(GOTEST) -fuzz=Fuzz -fuzztime=5m ./testing/fuzz/...
+
+# Run end-to-end tests
+test-e2e:
+	@echo "Running end-to-end tests...\"\n\t$(GOTEST) -v -tags=e2e ./testing/e2e/...
+
+# Run tests with coverage and generate HTML report
+test-coverage-html:
+	@echo "Generating coverage report..."
+	$(GOTEST) -coverprofile=coverage.out -covermode=atomic ./...
+	$(GO) tool cover -html=coverage.out -o coverage.html
+	@echo "Coverage report: coverage.html"
+
+# Run tests with coverage for specific package
+test-coverage-pkg:
+	@echo "Running coverage for package: $(PKG)"
+	$(GOTEST) -coverprofile=coverage.out -covermode=atomic ./$(PKG)/...
+	$(GO) tool cover -html=coverage.out -o coverage.html
+
+# =============================================================================
+# Test Environment Management
+# =============================================================================
+
+# Start test simulators (Modbus, OPC UA, S7, MQTT)
+test-env-up:
+	@echo "Starting test environment..."
+	docker-compose -f docker-compose.test.yaml up -d
+	@echo "Waiting for services to be ready..."
+	@sleep 5
+	@echo "Test environment ready!"
+
+# Stop test simulators
+test-env-down:
+	@echo "Stopping test environment..."
+	docker-compose -f docker-compose.test.yaml down
+
+# View test environment logs
+test-env-logs:
+	docker-compose -f docker-compose.test.yaml logs -f
+
+# Check test environment health
+test-env-health:
+	@echo "Checking test environment health..."
+	docker-compose -f docker-compose.test.yaml ps
+
+# Run full test suite (unit + integration)
+test-all: test-env-up test test-integration test-env-down
+	@echo "Full test suite completed!"
+
+# =============================================================================
+# Benchmark Targets
+# =============================================================================
+
+# Run throughput benchmarks
+bench-throughput:
+	@echo "Running throughput benchmarks..."
+	$(GOTEST) -bench=. -benchmem ./testing/benchmark/throughput/...
+
+# Run concurrency benchmarks
+bench-concurrency:
+	@echo "Running concurrency benchmarks..."
+	$(GOTEST) -bench=. -benchmem ./testing/benchmark/concurrency/...
+
+# Run memory benchmarks
+bench-memory:
+	@echo "Running memory benchmarks..."
+	$(GOTEST) -bench=. -benchmem -memprofile=mem.out ./testing/benchmark/memory/...
+	$(GO) tool pprof -text mem.out
+
+# Run latency benchmarks
+bench-latency:
+	@echo "Running latency benchmarks..."
+	$(GOTEST) -bench=. -benchmem ./testing/benchmark/latency/...
+
+# =============================================================================
+# Original Targets (continued)
+# =============================================================================
 
 # Format the code
 fmt:
@@ -136,27 +251,54 @@ vuln:
 help:
 	@echo "Protocol Gateway - Available commands:"
 	@echo ""
-	@echo "  make build           - Build the binary"
-	@echo "  make build-all       - Build for multiple platforms"
-	@echo "  make run             - Build and run the application"
-	@echo "  make dev             - Run with hot reload (requires air)"
-	@echo "  make test            - Run tests"
-	@echo "  make test-cover      - Run tests with coverage report"
-	@echo "  make test-integration- Run integration tests"
-	@echo "  make bench           - Run benchmarks"
-	@echo "  make lint            - Lint the code (requires golangci-lint)"
-	@echo "  make fmt             - Format the code"
-	@echo "  make vet             - Run go vet"
-	@echo "  make clean           - Clean build artifacts"
-	@echo "  make deps            - Download dependencies"
-	@echo "  make deps-update     - Update dependencies"
-	@echo "  make generate        - Generate mocks"
-	@echo "  make docker-build    - Build Docker image"
-	@echo "  make docker-run      - Run Docker container"
-	@echo "  make docker-dev-up   - Start development environment"
-	@echo "  make docker-dev-down - Stop development environment"
-	@echo "  make docker-dev-logs - View development logs"
-	@echo "  make security        - Run security scan"
-	@echo "  make vuln            - Check for vulnerabilities"
-	@echo "  make help            - Show this help message"
+	@echo "Build & Run:"
+	@echo "  make build              - Build the binary"
+	@echo "  make build-all          - Build for multiple platforms"
+	@echo "  make run                - Build and run the application"
+	@echo "  make dev                - Run with hot reload (requires air)"
+	@echo ""
+	@echo "Testing:"
+	@echo "  make test               - Run all tests (short mode)"
+	@echo "  make test-unit          - Run unit tests only"
+	@echo "  make test-verbose       - Run tests with verbose output"
+	@echo "  make test-cover         - Run tests with coverage report"
+	@echo "  make test-coverage-html - Generate HTML coverage report"
+	@echo "  make test-integration   - Run integration tests"
+	@echo "  make test-e2e           - Run end-to-end tests"
+	@echo "  make test-fuzz          - Run fuzz tests (30s)"
+	@echo "  make test-race          - Run tests with race detector"
+	@echo "  make test-all           - Run full test suite"
+	@echo ""
+	@echo "Benchmarks:"
+	@echo "  make bench              - Run all benchmarks"
+	@echo "  make bench-throughput   - Run throughput benchmarks"
+	@echo "  make bench-concurrency  - Run concurrency benchmarks"
+	@echo "  make bench-memory       - Run memory benchmarks"
+	@echo "  make bench-latency      - Run latency benchmarks"
+	@echo ""
+	@echo "Test Environment:"
+	@echo "  make test-env-up        - Start test simulators"
+	@echo "  make test-env-down      - Stop test simulators"
+	@echo "  make test-env-logs      - View simulator logs"
+	@echo "  make test-env-health    - Check simulator health"
+	@echo ""
+	@echo "Code Quality:"
+	@echo "  make lint               - Lint the code (requires golangci-lint)"
+	@echo "  make fmt                - Format the code"
+	@echo "  make vet                - Run go vet"
+	@echo "  make security           - Run security scan"
+	@echo "  make vuln               - Check for vulnerabilities"
+	@echo ""
+	@echo "Dependencies:"
+	@echo "  make deps               - Download dependencies"
+	@echo "  make deps-update        - Update dependencies"
+	@echo "  make generate           - Generate mocks"
+	@echo ""
+	@echo "Docker:"
+	@echo "  make docker-build       - Build Docker image"
+	@echo "  make docker-run         - Run Docker container"
+	@echo "  make docker-dev-up      - Start development environment"
+	@echo "  make docker-dev-down    - Stop development environment"
+	@echo "  make clean              - Clean build artifacts"
+	@echo ""
 

@@ -1,0 +1,70 @@
+# Docker Compose for Test Simulators
+# Usage: docker-compose -f docker-compose.test.yaml up -d
+
+services:
+  # MQTT Broker for testing
+  mqtt-broker:
+    image: eclipse-mosquitto:2
+    container_name: test-mqtt
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./testing/fixtures/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "mosquitto_sub", "-t", "$$SYS/#", "-C", "1", "-i", "healthcheck", "-W", "3"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Modbus TCP Simulator
+  modbus-simulator:
+    image: oitc/modbus-server:latest
+    container_name: test-modbus
+    ports:
+      - "5020:5020"
+    environment:
+      - MODBUS_PORT=5020
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "5020"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # OPC UA Simulator (using our custom simulator)
+  opcua-simulator:
+    build:
+      context: ./tools/opcua-simulator
+      dockerfile: Dockerfile
+    container_name: test-opcua
+    ports:
+      - "4840:4840"
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "4840"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # S7 Simulator (snap7)
+  s7-simulator:
+    image: mcskol/snap7server:latest
+    container_name: test-s7
+    ports:
+      - "102:102"
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "102"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+networks:
+  test-network:
+    driver: bridge

@@ -1,0 +1,11 @@
+# Test config: minimal valid configuration
+gateway:
+  name: "test-gateway"
+  poll_interval: 1s
+
+mqtt:
+  broker: "tcp://localhost:1883"
+  client_id: "test-gateway"
+  qos: 1
+
+devices: []

@@ -312,22 +312,17 @@ func main() {
 			stats.PointsRead, stats.PointsPublished)
 	})
 
+	// Initialize API middleware with security configuration
+	apiMiddleware := api.NewMiddleware(cfg.API, logger)
+
 	// Web UI API endpoints
 	apiHandler := api.NewAPIHandler(deviceManager, logger)
 	apiHandler.SetTopicTracker(mqttPublisher)
 	apiHandler.SetSubscriptionProvider(cmdHandler)
 	apiHandler.SetLogProvider(api.NewDockerCLILogProvider(logger))
-	mux.HandleFunc("/api/devices", func(w http.ResponseWriter, r *http.Request) {
-		// Enable CORS
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
+	// Device management endpoints (protected - require auth for mutations)
+	mux.HandleFunc("/api/devices", apiMiddleware.Secure(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case "GET":
 			if r.URL.Query().Get("id") != "" {
@@ -344,59 +339,25 @@ func main() {
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	})
-	mux.HandleFunc("/api/test-connection", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	}))
 
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
+	mux.HandleFunc("/api/test-connection", apiMiddleware.Secure(func(w http.ResponseWriter, r *http.Request) {
 		apiHandler.TestConnectionHandler(w, r)
-	})
+	}))
 
-	// Topics / Routes overview
-	mux.HandleFunc("/api/topics", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
+	// Topics / Routes overview (read-only, no auth required)
+	mux.HandleFunc("/api/topics", apiMiddleware.ReadOnly(func(w http.ResponseWriter, r *http.Request) {
 		apiHandler.TopicsOverviewHandler(w, r)
-	})
+	}))
 
-	// Container logs (requires docker CLI available to the gateway process)
-	mux.HandleFunc("/api/logs/containers", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
+	// Container logs (read-only, no auth required)
+	mux.HandleFunc("/api/logs/containers", apiMiddleware.ReadOnly(func(w http.ResponseWriter, r *http.Request) {
 		apiHandler.ListContainersHandler(w, r)
-	})
-	mux.HandleFunc("/api/logs", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	}))
 
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
+	mux.HandleFunc("/api/logs", apiMiddleware.ReadOnly(func(w http.ResponseWriter, r *http.Request) {
 		apiHandler.LogsHandler(w, r)
-	})
+	}))
 
 	// Serve web UI static files
 	mux.Handle("/", http.FileServer(http.Dir("./web")))

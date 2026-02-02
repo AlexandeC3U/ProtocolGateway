@@ -1,0 +1,15 @@
+# Test config: invalid configuration for error testing
+gateway:
+  # Missing name
+  poll_interval: "invalid-duration"  # Invalid duration format
+
+mqtt:
+  broker: ""  # Empty broker URL
+  qos: 5      # Invalid QoS (should be 0, 1, or 2)
+
+devices:
+  - id: ""     # Empty ID (invalid)
+    name: ""   # Empty name (invalid)
+    protocol: "unknown-protocol"  # Unknown protocol
+    enabled: true
+    tags: []   # No tags (may be invalid depending on validation)

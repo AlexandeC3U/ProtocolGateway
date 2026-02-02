@@ -26,6 +26,11 @@ func applyScaling(value interface{}, tag *domain.Tag) interface{} {
 
 // reverseScaling reverses the scaling for write operations.
 func reverseScaling(value interface{}, tag *domain.Tag) interface{} {
+	// Guard against division by zero - treat 0 scale factor as 1.0 (no scaling)
+	if tag.ScaleFactor == 0 {
+		return value
+	}
+
 	if tag.ScaleFactor == 1.0 && tag.Offset == 0 {
 		return value
 	}

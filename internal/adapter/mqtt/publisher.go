@@ -161,15 +161,55 @@ func (p *Publisher) recordTopicPublish(topic string, payloadBytes int) {
 	now := time.Now()
 
 	p.topicMu.Lock()
+	defer p.topicMu.Unlock()
+
 	stat, ok := p.topicStats[topic]
 	if !ok {
+		// Limit the number of tracked topics to prevent unbounded memory growth
+		// If we have too many topics, evict the oldest ones
+		const maxTrackedTopics = 10000
+		if len(p.topicStats) >= maxTrackedTopics {
+			p.evictOldestTopicsLocked(maxTrackedTopics / 10) // Evict 10%
+		}
 		stat = &TopicStat{Topic: topic}
 		p.topicStats[topic] = stat
 	}
 	stat.Count++
 	stat.LastPublished = now
 	stat.LastPayloadBytes = payloadBytes
-	p.topicMu.Unlock()
+}
+
+// evictOldestTopicsLocked removes the N oldest topics from the stats map.
+// Must be called with topicMu held.
+func (p *Publisher) evictOldestTopicsLocked(count int) {
+	if count <= 0 || len(p.topicStats) == 0 {
+		return
+	}
+
+	// Build list of topics with their last publish time
+	type topicAge struct {
+		topic string
+		time  time.Time
+	}
+	topics := make([]topicAge, 0, len(p.topicStats))
+	for topic, stat := range p.topicStats {
+		topics = append(topics, topicAge{topic: topic, time: stat.LastPublished})
+	}
+
+	// Sort by age (oldest first)
+	sort.Slice(topics, func(i, j int) bool {
+		return topics[i].time.Before(topics[j].time)
+	})
+
+	// Delete the oldest entries
+	if count > len(topics) {
+		count = len(topics)
+	}
+	for i := 0; i < count; i++ {
+		delete(p.topicStats, topics[i].topic)
+	}
+
+	p.logger.Debug().Int("evicted", count).Int("remaining", len(p.topicStats)).Msg("Evicted old topic stats")
 }
 
 // Connect establishes the connection to the MQTT broker.

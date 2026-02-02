@@ -75,10 +75,19 @@ func (c *Client) Connect(ctx context.Context) error {
 	select {
 	case err := <-connectDone:
 		if err != nil {
+			// Close handler to release resources on failure
+			handler.Close()
 			c.lastError = err
 			return fmt.Errorf("%w: %v", domain.ErrConnectionFailed, err)
 		}
 	case <-ctx.Done():
+		// Context cancelled - close handler in background to prevent leak
+		// The Connect() goroutine may still be running, but handler.Close()
+		// will cause it to fail and return.
+		go func() {
+			<-connectDone // Wait for connect goroutine to finish
+			handler.Close()
+		}()
 		return fmt.Errorf("%w: %v", domain.ErrConnectionTimeout, ctx.Err())
 	}
 
@@ -101,13 +110,16 @@ func (c *Client) Disconnect() error {
 		return nil
 	}
 
+	// Mark as disconnected BEFORE clearing handler/client to prevent
+	// racing goroutines from using nil pointers
+	c.connected.Store(false)
+
 	if c.handler != nil {
 		if err := c.handler.Close(); err != nil {
 			c.logger.Warn().Err(err).Msg("Error closing Modbus connection")
 		}
 	}
 
-	c.connected.Store(false)
 	c.handler = nil
 	c.client = nil
 
@@ -242,6 +254,12 @@ func (c *Client) readRegisters(tag *domain.Tag) ([]byte, error) {
 		return nil, domain.ErrConnectionClosed
 	}
 
+	// Validate Modbus protocol limits
+	// Per Modbus spec: max 125 registers (holding/input), max 2000 coils/discrete inputs
+	if err := c.validateProtocolLimits(tag); err != nil {
+		return nil, err
+	}
+
 	// Serialize all Modbus operations to prevent protocol corruption
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
@@ -269,6 +287,56 @@ func (c *Client) readRegisters(tag *domain.Tag) ([]byte, error) {
 
 	c.consecutiveFailures.Store(0) // Reset on success
 	return result, nil
+}
+
+// Modbus protocol limits per spec
+const (
+	MaxHoldingRegisters = 125  // FC03/FC04: max registers per read
+	MaxInputRegisters   = 125  // FC03/FC04: max registers per read
+	MaxCoils            = 2000 // FC01/FC02: max coils/discrete inputs per read
+	MaxDiscreteInputs   = 2000
+	MaxWriteRegisters   = 123  // FC16: max registers per write
+	MaxWriteCoils       = 1968 // FC15: max coils per write
+)
+
+// validateProtocolLimits ensures the tag request is within Modbus protocol limits.
+func (c *Client) validateProtocolLimits(tag *domain.Tag) error {
+	// Validate RegisterCount is not zero
+	if tag.RegisterCount == 0 {
+		return fmt.Errorf("%w: RegisterCount cannot be 0 for tag %q",
+			domain.ErrInvalidRegisterCount, tag.ID)
+	}
+
+	switch tag.RegisterType {
+	case domain.RegisterTypeHoldingRegister:
+		if tag.RegisterCount > MaxHoldingRegisters {
+			return fmt.Errorf("%w: holding register count %d exceeds max %d",
+				domain.ErrModbusProtocolLimit, tag.RegisterCount, MaxHoldingRegisters)
+		}
+	case domain.RegisterTypeInputRegister:
+		if tag.RegisterCount > MaxInputRegisters {
+			return fmt.Errorf("%w: input register count %d exceeds max %d",
+				domain.ErrModbusProtocolLimit, tag.RegisterCount, MaxInputRegisters)
+		}
+	case domain.RegisterTypeCoil:
+		if tag.RegisterCount > MaxCoils {
+			return fmt.Errorf("%w: coil count %d exceeds max %d",
+				domain.ErrModbusProtocolLimit, tag.RegisterCount, MaxCoils)
+		}
+	case domain.RegisterTypeDiscreteInput:
+		if tag.RegisterCount > MaxDiscreteInputs {
+			return fmt.Errorf("%w: discrete input count %d exceeds max %d",
+				domain.ErrModbusProtocolLimit, tag.RegisterCount, MaxDiscreteInputs)
+		}
+	}
+
+	// Also validate address doesn't overflow (address + count <= 65535)
+	if uint32(tag.Address)+uint32(tag.RegisterCount) > 65535 {
+		return fmt.Errorf("%w: address range %d-%d exceeds 16-bit limit",
+			domain.ErrModbusProtocolLimit, tag.Address, uint32(tag.Address)+uint32(tag.RegisterCount)-1)
+	}
+
+	return nil
 }
 
 // groupTagsByType groups tags by register type for efficient batch reads.

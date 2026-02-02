@@ -74,11 +74,22 @@ func parseValue(data []byte, tag *domain.Tag) (interface{}, error) {
 
 // reorderBytes reorders bytes according to the specified byte order.
 func reorderBytes(data []byte, order domain.ByteOrder) []byte {
-	if len(data) <= 2 {
-		if order == domain.ByteOrderLittleEndian {
-			return []byte{data[1], data[0]}
-		}
+	// Guard against empty or single-byte data
+	if len(data) == 0 {
 		return data
+	}
+	if len(data) == 1 {
+		return data // No reordering possible for single byte
+	}
+
+	// Handle 2-byte case specially
+	if len(data) == 2 {
+		switch order {
+		case domain.ByteOrderLittleEndian:
+			return []byte{data[1], data[0]}
+		default:
+			return data
+		}
 	}
 
 	result := make([]byte, len(data))
@@ -92,19 +103,27 @@ func reorderBytes(data []byte, order domain.ByteOrder) []byte {
 		}
 
 	case domain.ByteOrderMidBigEndian: // BADC (word swap)
-		for i := 0; i < len(data); i += 2 {
+		for i := 0; i < len(data)-1; i += 2 {
 			result[i] = data[i+1]
 			result[i+1] = data[i]
 		}
+		// Handle odd byte at end
+		if len(data)%2 == 1 {
+			result[len(data)-1] = data[len(data)-1]
+		}
 
 	case domain.ByteOrderMidLitEndian: // CDAB (byte swap)
-		for i := 0; i < len(data); i += 4 {
-			if i+3 < len(data) {
-				result[i] = data[i+2]
-				result[i+1] = data[i+3]
-				result[i+2] = data[i]
-				result[i+3] = data[i+1]
-			}
+		for i := 0; i+3 < len(data); i += 4 {
+			result[i] = data[i+2]
+			result[i+1] = data[i+3]
+			result[i+2] = data[i]
+			result[i+3] = data[i+1]
+		}
+		// Handle remaining bytes (less than 4)
+		remainder := len(data) % 4
+		if remainder > 0 {
+			start := len(data) - remainder
+			copy(result[start:], data[start:])
 		}
 
 	default:

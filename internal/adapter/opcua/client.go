@@ -102,15 +102,16 @@ func (c *Client) Connect(ctx context.Context) error {
 		opts = append(opts, opcua.SecurityModeString(c.config.SecurityMode))
 	}
 
-	// Configure authentication
+	// Configure authentication (default to Anonymous if not specified)
 	switch c.config.AuthMode {
-	case "Anonymous":
-		opts = append(opts, opcua.AuthAnonymous())
 	case "UserName":
 		opts = append(opts, opcua.AuthUsername(c.config.Username, c.config.Password))
 	case "Certificate":
 		opts = append(opts, opcua.CertificateFile(c.config.CertificateFile))
 		opts = append(opts, opcua.PrivateKeyFile(c.config.PrivateKeyFile))
+	default:
+		// Default to Anonymous for empty string or explicit "Anonymous"
+		opts = append(opts, opcua.AuthAnonymous())
 	}
 
 	// Create client
@@ -253,6 +254,7 @@ func (c *Client) ReadTag(ctx context.Context, tag *domain.Tag) (*domain.DataPoin
 }
 
 // ReadTags reads multiple tags efficiently using batch reads.
+// Uses opMu to serialize batch operations for thread safety.
 func (c *Client) ReadTags(ctx context.Context, tags []*domain.Tag) ([]*domain.DataPoint, error) {
 	if len(tags) == 0 {
 		return nil, nil
@@ -265,6 +267,10 @@ func (c *Client) ReadTags(ctx context.Context, tags []*domain.Tag) ([]*domain.Da
 	if !c.connected.Load() {
 		return nil, domain.ErrConnectionClosed
 	}
+
+	// Serialize batch operations to prevent protocol corruption
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
 
 	// Build read requests
 	nodesToRead := make([]*ua.ReadValueID, 0, len(tags))
@@ -408,6 +414,7 @@ func (c *Client) WriteTag(ctx context.Context, tag *domain.Tag, value interface{
 }
 
 // WriteTags writes multiple values to tags on the OPC UA server.
+// Uses opMu to serialize batch operations for thread safety.
 func (c *Client) WriteTags(ctx context.Context, writes []TagWrite) []error {
 	if len(writes) == 0 {
 		return nil
@@ -424,6 +431,10 @@ func (c *Client) WriteTags(ctx context.Context, writes []TagWrite) []error {
 		}
 		return errors
 	}
+
+	// Serialize batch operations to prevent protocol corruption
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
 
 	// Build write requests
 	nodesToWrite := make([]*ua.WriteValue, 0, len(writes))
@@ -878,8 +889,27 @@ func isTooManySessionsError(err error) bool {
 }
 
 // reconnect attempts to re-establish the connection.
+// This is safe to call concurrently - only one reconnect attempt will proceed.
 func (c *Client) reconnect(ctx context.Context) {
+	// Use TryLock to avoid blocking if another goroutine is already reconnecting.
+	// If we can't get the lock, someone else is already handling reconnection.
+	if !c.mu.TryLock() {
+		c.logger.Debug().Msg("Reconnect already in progress, skipping")
+		return
+	}
+
+	// Check if we're still connected (another goroutine may have reconnected)
+	if c.connected.Load() {
+		c.mu.Unlock()
+		return
+	}
+
+	c.sessionState = SessionStateConnecting
+	c.mu.Unlock()
+
+	// Perform disconnect (which acquires its own lock)
 	c.Disconnect()
+
 	if err := c.Connect(ctx); err != nil {
 		c.logger.Error().Err(err).Msg("Failed to reconnect")
 	}

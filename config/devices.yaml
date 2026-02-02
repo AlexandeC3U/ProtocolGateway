@@ -67,4 +67,36 @@ devices:
           byte_order: big_endian
           register_count: 1
           opc_node_id: ns=2;s=Demo.Switch
-
+    - id: Nexus
+      name: PLC_1
+      protocol: opcua
+      enabled: false
+      uns_prefix: plant1/area1/line2
+      poll_interval: 3s
+      connection:
+        host: 20.67.32.235
+        port: 4841
+        timeout: 5s
+        retry_count: 3
+        retry_delay: 100ms
+        slave_id: 1
+        opc_endpoint_url: opc.tcp://20.67.32.235:4841
+        opc_security_policy: ""
+        opc_security_mode: ""
+        opc_auth_mode: ""
+        opc_username: ""
+        opc_password: ""
+        s7_rack: 0
+        s7_slot: 0
+      tags:
+        - id: tag-1769791243632
+          name: TemperatureSensor
+          data_type: float32
+          scale_factor: 1
+          topic_suffix: temp
+          enabled: true
+          access_mode: read
+          register_type: holding_register
+          byte_order: big_endian
+          register_count: 1
+          opc_node_id: ns=1;s=PLC_1.TemperatureSensor

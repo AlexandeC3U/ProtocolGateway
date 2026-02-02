@@ -1,0 +1,105 @@
+# Test config: full valid configuration with all options
+gateway:
+  name: "test-gateway-full"
+  poll_interval: 500ms
+  buffer_size: 10000
+  worker_count: 4
+  
+api:
+  enabled: true
+  port: 8080
+  auth_enabled: true
+  api_key: "test-api-key-12345"
+  max_request_body_size: 1048576
+  allowed_origins:
+    - "http://localhost:3000"
+    - "http://localhost:8080"
+
+mqtt:
+  broker: "tcp://localhost:1883"
+  client_id: "test-gateway"
+  username: "test"
+  password: "test"
+  qos: 1
+  retain: false
+  clean_session: true
+  connect_timeout: 10s
+  keepalive: 30s
+  buffer_size: 5000
+
+metrics:
+  enabled: true
+  port: 9090
+  path: "/metrics"
+
+logging:
+  level: "debug"
+  format: "json"
+
+devices:
+  - id: "modbus-plc-1"
+    name: "Modbus Test PLC"
+    protocol: "modbus-tcp"
+    enabled: true
+    poll_interval: 1s
+    uns_prefix: "test/plant/line1/plc1"
+    connection:
+      host: "localhost"
+      port: 5020
+      slave_id: 1
+      timeout: 5s
+      retry_count: 3
+      retry_delay: 1s
+    tags:
+      - id: "temperature"
+        name: "Temperature"
+        address: 0
+        register_type: "holding_register"
+        data_type: "float32"
+        byte_order: "big_endian"
+        register_count: 2
+        scale_factor: 0.1
+        offset: 0
+        unit: "°C"
+        topic_suffix: "temperature"
+        enabled: true
+        
+      - id: "pressure"
+        name: "Pressure"
+        address: 2
+        register_type: "holding_register"
+        data_type: "float32"
+        byte_order: "big_endian"
+        register_count: 2
+        unit: "bar"
+        topic_suffix: "pressure"
+        enabled: true
+        
+      - id: "running"
+        name: "Running Status"
+        address: 0
+        register_type: "coil"
+        data_type: "bool"
+        topic_suffix: "status/running"
+        enabled: true
+
+  - id: "opcua-server-1"
+    name: "OPC UA Test Server"
+    protocol: "opcua"
+    enabled: true
+    poll_interval: 500ms
+    uns_prefix: "test/plant/line1/opcua"
+    connection:
+      host: "localhost"
+      port: 4840
+      opc_endpoint: "opc.tcp://localhost:4840"
+      opc_sec_policy: "None"
+      opc_sec_mode: "None"
+      timeout: 10s
+    tags:
+      - id: "server_time"
+        name: "Server Time"
+        opc_node_id: "i=2258"
+        data_type: "string"
+        topic_suffix: "server/time"
+        enabled: true

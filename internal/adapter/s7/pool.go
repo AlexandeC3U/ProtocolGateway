@@ -369,8 +369,15 @@ func (p *Pool) Close() error {
 	p.closed = true
 	defer p.mu.Unlock()
 
+	// Collect client IDs first to avoid deleting from map during iteration
+	clientIDs := make([]string, 0, len(p.clients))
+	for id := range p.clients {
+		clientIDs = append(clientIDs, id)
+	}
+
 	var lastErr error
-	for id, entry := range p.clients {
+	for _, id := range clientIDs {
+		entry := p.clients[id]
 		if err := entry.client.Disconnect(); err != nil {
 			p.logger.Error().Err(err).Str("device", id).Msg("Error closing S7 connection")
 			lastErr = err

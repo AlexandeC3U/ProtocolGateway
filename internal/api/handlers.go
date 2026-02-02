@@ -15,6 +15,175 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// =============================================================================
+// Security Middleware
+// =============================================================================
+
+// Middleware wraps an http.Handler with security checks.
+type Middleware struct {
+	config config.APIConfig
+	logger zerolog.Logger
+}
+
+// NewMiddleware creates a new middleware with the given configuration.
+func NewMiddleware(cfg config.APIConfig, logger zerolog.Logger) *Middleware {
+	return &Middleware{
+		config: cfg,
+		logger: logger.With().Str("component", "api-middleware").Logger(),
+	}
+}
+
+// RequireAuth wraps a handler with API key authentication.
+// If auth is disabled in config, the handler is called directly.
+func (m *Middleware) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !m.config.AuthEnabled {
+			next(w, r)
+			return
+		}
+
+		// Check for API key in header or query param
+		apiKey := r.Header.Get("X-API-Key")
+		if apiKey == "" {
+			apiKey = r.URL.Query().Get("api_key")
+		}
+
+		if apiKey == "" {
+			m.logger.Warn().
+				Str("method", r.Method).
+				Str("path", r.URL.Path).
+				Str("remote", r.RemoteAddr).
+				Msg("Missing API key")
+			http.Error(w, "Unauthorized: API key required", http.StatusUnauthorized)
+			return
+		}
+
+		if apiKey != m.config.APIKey {
+			m.logger.Warn().
+				Str("method", r.Method).
+				Str("path", r.URL.Path).
+				Str("remote", r.RemoteAddr).
+				Msg("Invalid API key")
+			http.Error(w, "Unauthorized: Invalid API key", http.StatusUnauthorized)
+			return
+		}
+
+		next(w, r)
+	}
+}
+
+// LimitRequestBody wraps a handler to limit request body size.
+// This prevents DoS attacks via large payloads.
+func (m *Middleware) LimitRequestBody(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if m.config.MaxRequestBodySize > 0 && r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, m.config.MaxRequestBodySize)
+		}
+		next(w, r)
+	}
+}
+
+// CORS adds CORS headers based on configuration.
+// Returns true if this was a preflight request that was handled.
+func (m *Middleware) CORS(w http.ResponseWriter, r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return false
+	}
+
+	// Check if origin is allowed
+	allowed := false
+	allowedOrigin := ""
+
+	if len(m.config.AllowedOrigins) == 0 {
+		// If no origins configured, allow all (development mode)
+		allowed = true
+		allowedOrigin = "*"
+	} else {
+		for _, o := range m.config.AllowedOrigins {
+			if o == "*" || o == origin {
+				allowed = true
+				allowedOrigin = origin
+				break
+			}
+		}
+	}
+
+	if !allowed {
+		m.logger.Warn().
+			Str("origin", origin).
+			Msg("CORS: origin not allowed")
+		return false
+	}
+
+	w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key")
+	w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
+
+	// Handle preflight
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return true
+	}
+
+	return false
+}
+
+// Secure combines authentication, body size limiting, and CORS.
+func (m *Middleware) Secure(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Handle CORS first (including preflight)
+		if m.CORS(w, r) {
+			return
+		}
+
+		// Apply body size limit
+		if m.config.MaxRequestBodySize > 0 && r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, m.config.MaxRequestBodySize)
+		}
+
+		// Check authentication for non-GET requests or if explicitly required
+		if m.config.AuthEnabled {
+			apiKey := r.Header.Get("X-API-Key")
+			if apiKey == "" {
+				apiKey = r.URL.Query().Get("api_key")
+			}
+
+			if apiKey != m.config.APIKey {
+				m.logger.Warn().
+					Str("method", r.Method).
+					Str("path", r.URL.Path).
+					Str("remote", r.RemoteAddr).
+					Msg("Authentication failed")
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+
+		next(w, r)
+	}
+}
+
+// ReadOnly applies CORS and body size limit but no auth (for public read endpoints).
+func (m *Middleware) ReadOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if m.CORS(w, r) {
+			return
+		}
+
+		if m.config.MaxRequestBodySize > 0 && r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, m.config.MaxRequestBodySize)
+		}
+
+		next(w, r)
+	}
+}
+
+// =============================================================================
+// Device Manager
+// =============================================================================
+
 func normalizeDeviceTopics(device *domain.Device) {
 	if device == nil {
 		return

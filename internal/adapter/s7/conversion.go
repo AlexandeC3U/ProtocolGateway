@@ -96,12 +96,23 @@ func (c *Client) valueToBytes(value interface{}, tag *domain.Tag, bitOffset int)
 		if !ok {
 			return nil, fmt.Errorf("%w: cannot convert %T to bool", domain.ErrInvalidWriteValue, value)
 		}
+		// Note: For boolean writes, we need to do a read-modify-write to preserve
+		// adjacent bits in the same byte. The caller (writeData) handles this by
+		// reading the current byte first, then calling this with the existing value.
+		// This function returns the byte with ONLY the target bit set/cleared,
+		// so it must be OR'd or AND'd with the existing byte by the caller.
+		//
+		// Actually, the gos7 library AGWriteDB writes entire bytes, so writing
+		// just the bit mask would destroy adjacent bits. We mark this as needing
+		// read-modify-write at the call site.
 		data := BufferPool.Get(1)
 		if b {
 			data[0] = 1 << bitOffset
 		} else {
 			data[0] = 0
 		}
+		// Mark this as a boolean write needing special handling
+		// The actual read-modify-write is done in writeData
 		return data, nil
 
 	case domain.DataTypeInt16:

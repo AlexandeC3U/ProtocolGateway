@@ -22,6 +22,9 @@ type Config struct {
 	// HTTP server configuration
 	HTTP HTTPConfig `mapstructure:"http"`
 
+	// API configuration (authentication, rate limiting, etc.)
+	API APIConfig `mapstructure:"api"`
+
 	// MQTT configuration
 	MQTT MQTTConfig `mapstructure:"mqtt"`
 
@@ -47,6 +50,23 @@ type HTTPConfig struct {
 	ReadTimeout  time.Duration `mapstructure:"read_timeout"`
 	WriteTimeout time.Duration `mapstructure:"write_timeout"`
 	IdleTimeout  time.Duration `mapstructure:"idle_timeout"`
+}
+
+// APIConfig holds API security and rate limiting configuration.
+type APIConfig struct {
+	// AuthEnabled enables API key authentication for protected endpoints
+	AuthEnabled bool `mapstructure:"auth_enabled"`
+
+	// APIKey is the secret key required for authenticated endpoints
+	// In production, use a strong, randomly generated key
+	APIKey string `mapstructure:"api_key"`
+
+	// MaxRequestBodySize is the maximum allowed request body size in bytes
+	// Default: 1MB. Set to 0 to disable limit (not recommended).
+	MaxRequestBodySize int64 `mapstructure:"max_request_body_size"`
+
+	// AllowedOrigins for CORS. Use "*" to allow all (not recommended for production)
+	AllowedOrigins []string `mapstructure:"allowed_origins"`
 }
 
 // MQTTConfig holds MQTT client configuration.
@@ -178,6 +198,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("http.write_timeout", 10*time.Second)
 	v.SetDefault("http.idle_timeout", 60*time.Second)
 
+	// API security
+	v.SetDefault("api.auth_enabled", false)
+	v.SetDefault("api.api_key", "")
+	v.SetDefault("api.max_request_body_size", 1048576) // 1MB default
+	v.SetDefault("api.allowed_origins", []string{})
+
 	// MQTT
 	v.SetDefault("mqtt.broker_url", "tcp://localhost:1883")
 	v.SetDefault("mqtt.client_id", "protocol-gateway")
@@ -249,6 +275,11 @@ func bindEnvVars(v *viper.Viper) {
 
 	// HTTP
 	_ = v.BindEnv("http.port", "HTTP_PORT")
+
+	// API security
+	_ = v.BindEnv("api.auth_enabled", "API_AUTH_ENABLED")
+	_ = v.BindEnv("api.api_key", "API_KEY")
+	_ = v.BindEnv("api.max_request_body_size", "API_MAX_REQUEST_BODY_SIZE")
 
 	// Logging
 	_ = v.BindEnv("logging.level", "LOG_LEVEL")

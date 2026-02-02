@@ -82,10 +82,19 @@ func (c *Client) Connect(ctx context.Context) error {
 	select {
 	case err := <-connectDone:
 		if err != nil {
+			// Close handler to release resources on failure
+			handler.Close()
 			c.lastError = err
 			return fmt.Errorf("%w: %v", domain.ErrS7ConnectionFailed, err)
 		}
 	case <-ctx.Done():
+		// Context cancelled - close handler in background to prevent leak
+		// The Connect() goroutine may still be running, but handler.Close()
+		// will cause it to fail and return.
+		go func() {
+			<-connectDone // Wait for connect goroutine to finish
+			handler.Close()
+		}()
 		return fmt.Errorf("%w: %v", domain.ErrConnectionTimeout, ctx.Err())
 	}
 
@@ -408,6 +417,11 @@ func (c *Client) writeData(tag *domain.Tag, area domain.S7Area, dbNumber, offset
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
 
+	// For boolean writes, we need read-modify-write to preserve adjacent bits
+	if tag.DataType == domain.DataTypeBool {
+		return c.writeBoolWithRMW(client, tag, area, dbNumber, offset, bitOffset, value)
+	}
+
 	// Convert value to bytes
 	buffer, err := c.valueToBytes(value, tag, bitOffset)
 	if err != nil {
@@ -426,6 +440,55 @@ func (c *Client) writeData(tag *domain.Tag, area domain.S7Area, dbNumber, offset
 	if err != nil {
 		return fmt.Errorf("%w: area=%s db=%d offset=%d: %v",
 			domain.ErrS7WriteFailed, area, dbNumber, offset, err)
+	}
+
+	return nil
+}
+
+// writeBoolWithRMW performs a read-modify-write for boolean values to preserve adjacent bits.
+// Must be called with opMu already held.
+func (c *Client) writeBoolWithRMW(client gos7.Client, tag *domain.Tag, area domain.S7Area, dbNumber, offset, bitOffset int, value interface{}) error {
+	// Convert value to bool
+	actualValue := c.reverseScaling(value, tag)
+	b, ok := toBool(actualValue)
+	if !ok {
+		return fmt.Errorf("%w: cannot convert %T to bool", domain.ErrInvalidWriteValue, value)
+	}
+
+	// Read current byte
+	currentByte := BufferPool.Get(1)
+	defer BufferPool.Put(currentByte)
+
+	var err error
+	switch area {
+	case domain.S7AreaDB:
+		err = client.AGReadDB(dbNumber, offset, 1, currentByte)
+	default:
+		err = client.AGReadEB(offset, 1, currentByte)
+	}
+
+	if err != nil {
+		return fmt.Errorf("%w: failed to read byte for RMW: %v", domain.ErrS7ReadFailed, err)
+	}
+
+	// Modify the specific bit
+	if b {
+		currentByte[0] |= (1 << bitOffset) // Set bit
+	} else {
+		currentByte[0] &^= (1 << bitOffset) // Clear bit
+	}
+
+	// Write back
+	switch area {
+	case domain.S7AreaDB:
+		err = client.AGWriteDB(dbNumber, offset, 1, currentByte)
+	default:
+		err = client.AGWriteEB(offset, 1, currentByte)
+	}
+
+	if err != nil {
+		return fmt.Errorf("%w: area=%s db=%d offset=%d bit=%d: %v",
+			domain.ErrS7WriteFailed, area, dbNumber, offset, bitOffset, err)
 	}
 
 	return nil

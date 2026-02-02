@@ -341,7 +341,8 @@ func SaveDevices(path string, devices []*domain.Device) error {
 		return fmt.Errorf("failed to marshal devices: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	// Use 0600 permissions to protect credentials from other local users
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write devices file: %w", err)
 	}
 
