@@ -64,12 +64,12 @@ test-integration:
 # Run benchmarks
 bench:
 	@echo "Running benchmarks..."
-	$(GOTEST) -bench=. -benchmem ./...
+	$(GOTEST) -bench=. -benchmem -tags=benchmark ./...
 
 # Run benchmarks with comparison output
 bench-compare:
 	@echo "Running benchmarks with comparison..."
-	$(GOTEST) -bench=. -benchmem -count=5 ./... | tee bench.txt
+	$(GOTEST) -bench=. -benchmem -tags=benchmark -count=5 ./... | tee bench.txt
 
 # Lint the code
 lint:
@@ -95,19 +95,33 @@ test-pkg:
 	@echo "Running tests for package: $(PKG)"
 	$(GOTEST) -v -race ./$(PKG)/...
 
-# Run fuzz tests (limited time)
+# Run fuzz tests (seed corpus validation - runs all fuzz targets once)
 test-fuzz:
-	@echo "Running fuzz tests (30s each)..."
-	$(GOTEST) -fuzz=Fuzz -fuzztime=30s ./testing/fuzz/...
+	@echo "Running fuzz tests (seed corpus validation)..."
+	$(GOTEST) -tags=fuzz -v ./testing/fuzz/...
 
-# Run fuzz tests (extended)
+# Alias for fuzz tests
+fuzz: test-fuzz
+
+# Run a specific fuzz test for 30s (usage: make fuzz-target TARGET=FuzzModbusAddress)
+fuzz-target:
+	@echo "Running fuzz target $(TARGET) for 30s..."
+	$(GOTEST) -tags=fuzz -fuzz=$(TARGET) -fuzztime=30s ./testing/fuzz/...
+
+# Run fuzz tests (extended - one target at a time)
 test-fuzz-long:
-	@echo "Running fuzz tests (5m each)..."
-	$(GOTEST) -fuzz=Fuzz -fuzztime=5m ./testing/fuzz/...
+	@echo "Running FuzzReorderBytes_4Byte for 1m..."
+	$(GOTEST) -tags=fuzz -fuzz=FuzzReorderBytes_4Byte -fuzztime=1m ./testing/fuzz/conversion/
+	@echo "Running FuzzModbusAddress for 1m..."
+	$(GOTEST) -tags=fuzz -fuzz=FuzzModbusAddress -fuzztime=1m ./testing/fuzz/parsing/
 
 # Run end-to-end tests
 test-e2e:
-	@echo "Running end-to-end tests...\"\n\t$(GOTEST) -v -tags=e2e ./testing/e2e/...
+	@echo "Running end-to-end tests..."
+	$(GOTEST) -v -tags=e2e ./testing/e2e/...
+
+# Alias for e2e tests
+e2e: test-e2e
 
 # Run tests with coverage and generate HTML report
 test-coverage-html:
@@ -247,6 +261,42 @@ vuln:
 	@echo "Checking for vulnerabilities..."
 	govulncheck ./...
 
+# =============================================================================
+# Git Helpers
+# =============================================================================
+
+# Git add all changes
+git-add:
+	@echo "Staging all changes..."
+	git add -A
+
+# Git commit with auto-generated message (simple version for cross-platform)
+git-commit: git-add
+	@echo "Committing changes..."
+	git commit -m "Update project files"
+
+# Git commit with custom message (usage: make git-commit-msg MSG="your message")
+git-commit-msg: git-add
+	@echo "Committing with message: $(MSG)"
+	git commit -m "$(MSG)"
+
+# Git push to current branch
+git-push:
+	@echo "Pushing to remote..."
+	git push
+
+# Git commit and push (auto message)
+git-save: git-commit git-push
+	@echo "Changes saved and pushed!"
+
+# Git commit and push with custom message (usage: make git-save-msg MSG="your message")
+git-save-msg: git-commit-msg git-push
+	@echo "Changes saved and pushed!"
+
+# Git status
+git-status:
+	@git status -s
+
 # Help
 help:
 	@echo "Protocol Gateway - Available commands:"
@@ -300,5 +350,13 @@ help:
 	@echo "  make docker-dev-up      - Start development environment"
 	@echo "  make docker-dev-down    - Stop development environment"
 	@echo "  make clean              - Clean build artifacts"
+	@echo ""
+	@echo "Git Helpers:"
+	@echo "  make git-status         - Show git status"
+	@echo "  make git-save           - Add, commit (auto msg), and push"
+	@echo "  make git-save-msg MSG=\"message\" - Commit with custom message and push"
+	@echo "  make git-commit         - Add and commit with auto message"
+	@echo "  make git-commit-msg MSG=\"message\" - Commit with custom message"
+	@echo "  make git-push           - Push to remote"
 	@echo ""
 

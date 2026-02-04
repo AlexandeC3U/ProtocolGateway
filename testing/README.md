@@ -12,6 +12,9 @@ make test-cover
 # Benchmarks
 make bench
 
+# Fuuz
+make fuzz
+
 # Integration (needs simulators)
 docker-compose -f docker-compose.test.yaml up -d
 make test-integration

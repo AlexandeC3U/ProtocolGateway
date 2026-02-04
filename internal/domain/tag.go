@@ -201,6 +201,11 @@ func (t *Tag) ValidateForProtocol(protocol Protocol) error {
 			return fmt.Errorf("register type is required for Modbus tag %s", t.ID)
 		}
 
+		// Validate bit position if specified (must be 0-7)
+		if t.BitPosition != nil && *t.BitPosition > 7 {
+			return fmt.Errorf("bit position %d is out of range (must be 0-7) for Modbus tag %s", *t.BitPosition, t.ID)
+		}
+
 		expectedCount := t.ExpectedRegisterCount()
 		if t.RegisterCount == 0 {
 			t.RegisterCount = expectedCount

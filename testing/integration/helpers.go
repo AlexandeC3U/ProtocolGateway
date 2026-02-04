@@ -73,6 +73,17 @@ func SkipIfNoSimulator(t *testing.T, host string, port int) {
 	t.Logf("Testing against %s:%d", host, port)
 }
 
+// SkipIfNoMQTTBroker skips the test if MQTT broker is not available.
+func SkipIfNoMQTTBroker(t *testing.T, host string, port int) {
+	t.Helper()
+	t.Logf("Testing against MQTT broker at %s:%d", host, port)
+}
+
+// MQTTBrokerURL returns the MQTT broker URL for testing.
+func (c TestConfig) MQTTBrokerURL() string {
+	return fmt.Sprintf("tcp://%s:%d", c.MQTTHost, c.MQTTPort)
+}
+
 // WaitForCondition waits for a condition to become true.
 func WaitForCondition(t *testing.T, condition func() bool, timeout time.Duration, msg string) {
 	t.Helper()

@@ -25,6 +25,9 @@ func TestClientConfigStructure(t *testing.T) {
 	if cfg.Address != "192.168.1.10" {
 		t.Errorf("expected Address 192.168.1.10, got %s", cfg.Address)
 	}
+	if cfg.Port != 102 {
+		t.Errorf("expected Port 102, got %d", cfg.Port)
+	}
 	if cfg.Rack != 0 {
 		t.Errorf("expected Rack 0, got %d", cfg.Rack)
 	}
@@ -33,6 +36,15 @@ func TestClientConfigStructure(t *testing.T) {
 	}
 	if cfg.Timeout != 5*time.Second {
 		t.Errorf("expected Timeout 5s, got %v", cfg.Timeout)
+	}
+	if cfg.IdleTimeout != 30*time.Second {
+		t.Errorf("expected IdleTimeout 30s, got %v", cfg.IdleTimeout)
+	}
+	if cfg.MaxRetries != 3 {
+		t.Errorf("expected MaxRetries 3, got %d", cfg.MaxRetries)
+	}
+	if cfg.RetryDelay != time.Second {
+		t.Errorf("expected RetryDelay 1s, got %v", cfg.RetryDelay)
 	}
 	if cfg.PDUSize != 240 {
 		t.Errorf("expected PDUSize 240, got %d", cfg.PDUSize)

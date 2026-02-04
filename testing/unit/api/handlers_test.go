@@ -362,7 +362,7 @@ func TestHandler_HealthCheck(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	// Simulate health endpoint
-	handler := func(w http.ResponseWriter, r *http.Request) {
+	handler := func(w http.ResponseWriter, _ *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
 	}
 

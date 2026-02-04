@@ -522,6 +522,9 @@ func (c *Client) parseSymbolicAddress(address string) (domain.S7Area, int, int, 
 		bitOffset := 0
 		if matches[4] != "" {
 			bitOffset, _ = strconv.Atoi(matches[4])
+			if bitOffset > 7 {
+				return "", 0, 0, 0, fmt.Errorf("%w: bit offset %d out of range (0-7) in %s", domain.ErrS7InvalidAddress, bitOffset, address)
+			}
 		}
 		return domain.S7AreaDB, dbNum, offset, bitOffset, nil
 	}
@@ -534,6 +537,9 @@ func (c *Client) parseSymbolicAddress(address string) (domain.S7Area, int, int, 
 		bitOffset := 0
 		if matches[3] != "" {
 			bitOffset, _ = strconv.Atoi(matches[3])
+			if bitOffset > 7 {
+				return "", 0, 0, 0, fmt.Errorf("%w: bit offset %d out of range (0-7) in %s", domain.ErrS7InvalidAddress, bitOffset, address)
+			}
 		}
 		return domain.S7AreaM, 0, offset, bitOffset, nil
 	}
@@ -546,6 +552,9 @@ func (c *Client) parseSymbolicAddress(address string) (domain.S7Area, int, int, 
 		bitOffset := 0
 		if matches[3] != "" {
 			bitOffset, _ = strconv.Atoi(matches[3])
+			if bitOffset > 7 {
+				return "", 0, 0, 0, fmt.Errorf("%w: bit offset %d out of range (0-7) in %s", domain.ErrS7InvalidAddress, bitOffset, address)
+			}
 		}
 		return domain.S7AreaI, 0, offset, bitOffset, nil
 	}
@@ -558,6 +567,9 @@ func (c *Client) parseSymbolicAddress(address string) (domain.S7Area, int, int, 
 		bitOffset := 0
 		if matches[3] != "" {
 			bitOffset, _ = strconv.Atoi(matches[3])
+			if bitOffset > 7 {
+				return "", 0, 0, 0, fmt.Errorf("%w: bit offset %d out of range (0-7) in %s", domain.ErrS7InvalidAddress, bitOffset, address)
+			}
 		}
 		return domain.S7AreaQ, 0, offset, bitOffset, nil
 	}

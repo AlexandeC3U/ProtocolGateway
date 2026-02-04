@@ -87,6 +87,9 @@ func TestCircuitBreakerConfigStructure(t *testing.T) {
 	if cb.Timeout != 30*time.Second {
 		t.Errorf("expected Timeout 30s, got %v", cb.Timeout)
 	}
+	if cb.MaxRequests != 3 {
+		t.Errorf("expected MaxRequests 3, got %d", cb.MaxRequests)
+	}
 }
 
 // TestCircuitBreakerStateTransitions tests CB state machine.

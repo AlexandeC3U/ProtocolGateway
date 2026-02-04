@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 // OperationalState represents the operational state of the service.
@@ -62,6 +64,7 @@ type HealthChecker struct {
 	config Config
 	checks map[string]*CheckRegistration
 	mu     sync.RWMutex
+	logger zerolog.Logger
 
 	// Cached check results (updated by background loop)
 	statuses     map[string]*CheckStatus
@@ -70,8 +73,10 @@ type HealthChecker struct {
 	cachedResult *HealthResponse
 
 	// Operational state
-	state   OperationalState
-	stateMu sync.RWMutex
+	state           OperationalState
+	stateMu         sync.RWMutex
+	lastStateChange time.Time
+	onStateChange   func(from, to OperationalState)
 
 	// Flapping protection: track consecutive failures per check
 	failureCounts   map[string]int
@@ -123,7 +128,7 @@ type HealthResponse struct {
 }
 
 // NewChecker creates a new health checker.
-func NewChecker(config Config) *HealthChecker {
+func NewChecker(config Config, logger zerolog.Logger) *HealthChecker {
 	if config.CheckTimeout == 0 {
 		config.CheckTimeout = 5 * time.Second
 	}
@@ -138,12 +143,14 @@ func NewChecker(config Config) *HealthChecker {
 	}
 
 	return &HealthChecker{
-		config:        config,
-		checks:        make(map[string]*CheckRegistration),
-		statuses:      make(map[string]*CheckStatus),
-		failureCounts: make(map[string]int),
-		state:         StateStarting,
-		stopChan:      make(chan struct{}),
+		config:          config,
+		checks:          make(map[string]*CheckRegistration),
+		statuses:        make(map[string]*CheckStatus),
+		failureCounts:   make(map[string]int),
+		state:           StateStarting,
+		lastStateChange: time.Now(),
+		stopChan:        make(chan struct{}),
+		logger:          logger.With().Str("component", "health").Logger(),
 	}
 }
 
@@ -387,10 +394,47 @@ func (h *HealthChecker) updateOperationalState(healthStatus string) {
 }
 
 // SetState manually sets the operational state.
+// StateChangeCallback is called when operational state changes.
+type StateChangeCallback func(from, to OperationalState)
+
+// SetState updates the operational state with logging and optional callback notification.
 func (h *HealthChecker) SetState(state OperationalState) {
 	h.stateMu.Lock()
-	defer h.stateMu.Unlock()
+	oldState := h.state
+	if oldState == state {
+		h.stateMu.Unlock()
+		return // No change
+	}
 	h.state = state
+	h.lastStateChange = time.Now()
+	callback := h.onStateChange
+	h.stateMu.Unlock()
+
+	// Log the state transition
+	h.logger.Info().
+		Str("from_state", string(oldState)).
+		Str("to_state", string(state)).
+		Msg("operational state changed")
+
+	// Notify callback if registered
+	if callback != nil {
+		callback(oldState, state)
+	}
+}
+
+// OnStateChange registers a callback for state changes.
+// Only one callback can be registered; subsequent calls replace the previous one.
+func (h *HealthChecker) OnStateChange(callback StateChangeCallback) {
+	h.stateMu.Lock()
+	defer h.stateMu.Unlock()
+	h.onStateChange = callback
+}
+
+// LastStateChange returns when the operational state last changed.
+func (h *HealthChecker) LastStateChange() time.Time {
+	h.stateMu.RLock()
+	defer h.stateMu.RUnlock()
+	return h.lastStateChange
 }
 
 // GetState returns the current operational state.

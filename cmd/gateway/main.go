@@ -273,7 +273,7 @@ func main() {
 	healthChecker := health.NewChecker(health.Config{
 		ServiceName:    serviceName,
 		ServiceVersion: serviceVersion,
-	})
+	}, logger)
 	healthChecker.AddCheck("mqtt", mqttPublisher)
 	healthChecker.AddCheck("modbus_pool", modbusPool)
 	healthChecker.AddCheck("opcua_pool", opcuaPool)

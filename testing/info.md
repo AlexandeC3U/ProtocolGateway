@@ -27,9 +27,9 @@ testing/
 ├── unit/                      # Unit tests with mocks
 │   ├── domain/                # Business entities ✅
 │   ├── adapters/              # Protocol adapters
-│   │   ├── modbus/            # ✅ conversion_test.go, client_test.go, pool_test.go
-│   │   ├── opcua/             # ✅ conversion_test.go, client_test.go, subscription_test.go, pool_test.go, loadshaping_test.go
-│   │   ├── s7/                # ✅ client_test.go, pool_test.go
+│   │   ├── modbus/            # ✅ conversion_test.go, client_test.go, pool_test.go, health_test.go
+│   │   ├── opcua/             # ✅ conversion_test.go, client_test.go, subscription_test.go, pool_test.go, loadshaping_test.go, session_test.go
+│   │   ├── s7/                # ✅ client_test.go, pool_test.go, health_test.go
 │   │   └── mqtt/              # ✅ publisher_test.go
 │   ├── api/                   # HTTP handlers ✅
 │   ├── config/                # ✅ config_test.go, devices_test.go
@@ -38,25 +38,27 @@ testing/
 │   └── service/               # ✅ polling_test.go
 │
 ├── integration/               # Real protocol tests (requires hardware/simulators)
-│   ├── modbus/                # ✅ connection_test.go
-│   ├── opcua/                 # 📋 Planned
-│   ├── s7/                    # 📋 Planned
-│   └── mqtt/                  # 📋 Planned
+│   ├── modbus/                # ✅ connection_test.go, register_read_test.go, coil_operations_test.go, error_handling_test.go, reconnection_test.go
+│   ├── opcua/                 # ✅ connection_test.go, browse_test.go, read_write_test.go, subscription_test.go
+│   ├── s7/                    # ✅ connection_test.go
+│   └── mqtt/                  # ✅ connection_test.go, publish_test.go
 │
 ├── benchmark/                 # Performance tests
-│   ├── throughput/            # ✅ datapoint_test.go
-│   ├── latency/               # 📋 Planned
-│   ├── memory/                # 📋 Planned
-│   └── concurrency/           # ✅ stress_test.go
-│
-├── fuzz/                      # Fuzz testing - 📋 All Planned
-│   ├── conversion/
-│   ├── parsing/
-│   └── protocol/
-│
-├── e2e/                       # End-to-end - 📋 All Planned
-│   ├── scenarios/
-│   └── fixtures/
+│   ├── throughput/            # ✅ datapoint_test.go, protocol_read_throughput_test.go, mqtt_publish_throughput_test.go
+│   ├── latency/               # ✅ read_latency_test.go, write_latency_test.go
+│   ├── memory/                # ✅ datapoint_alloc_test.go, pool_efficiency_test.go
+│   └── concurrency/           # ✅ stress_test.go, pool_contention_test.go
+
+├── fuzz/                      # Fuzz testing
+│   ├── conversion/            # ✅ modbus_conversion_fuzz_test.go, scaling_fuzz_test.go, opcua_variant_fuzz_test.go, s7_type_fuzz_test.go
+│   ├── parsing/               # ✅ config_fuzz_test.go, address_fuzz_test.go, nodeid_fuzz_test.go
+│   └── protocol/              # ✅ modbus_frame_fuzz_test.go
+
+├── e2e/                       # End-to-end
+│   ├── startup_shutdown_test.go  # ✅
+│   ├── config_reload_test.go     # ✅
+│   ├── multi_device_test.go      # ✅
+│   └── scenarios/             # 📋 Planned
 │
 ├── mocks/                     # Shared mock implementations ✅
 │   ├── protocol_client.go
@@ -90,28 +92,28 @@ Isolated tests using mocks. No external dependencies.
 | **modbus** | `client_test.go` | Connection, read/write ops | 🔴 High | ✅ |
 | **modbus** | `conversion_test.go` | Byte order, type conversion | 🔴 High | ✅ |
 | **modbus** | `pool_test.go` | Pool lifecycle, health checks | 🔴 High | ✅ |
-| **modbus** | `health_test.go` | Health check logic | 🟡 Medium | 📋 |
+| **modbus** | `health_test.go` | Health check logic | 🟡 Medium | ✅ |
 | **opcua** | `client_test.go` | Connection, browse, read/write | 🔴 High | ✅ |
 | **opcua** | `conversion_test.go` | UA variant conversion | 🔴 High | ✅ |
 | **opcua** | `subscription_test.go` | Sub lifecycle, notifications | 🔴 High | ✅ |
-| **opcua** | `session_test.go` | Session management | 🟡 Medium | 📋 |
+| **opcua** | `session_test.go` | Session management | 🟡 Medium | ✅ |
 | **opcua** | `pool_test.go` | Connection pooling | 🔴 High | ✅ |
 | **opcua** | `loadshaping_test.go` | Rate limiting | 🟡 Medium | ✅ |
 | **s7** | `client_test.go` | Connection, read/write | 🔴 High | ✅ |
-| **s7** | `conversion_test.go` | S7 type conversion | 🔴 High | 📋 |
+| **s7** | `conversion_test.go` | S7 type conversion | 🔴 High | ✅ |
 | **s7** | `pool_test.go` | Pool management | 🔴 High | ✅ |
-| **s7** | `health_test.go` | Health checks | 🟡 Medium | 📋 |
+| **s7** | `health_test.go` | Health checks | 🟡 Medium | ✅ |
 | **mqtt** | `publisher_test.go` | Publish, buffer, reconnect | 🔴 High | ✅ |
 | **config** | `config_test.go` | YAML parsing, env override | 🔴 High | ✅ |
 | **config** | `devices_test.go` | Device config loading | 🔴 High | ✅ |
 | **api** | `handlers_test.go` | HTTP endpoints, middleware | 🔴 High | ✅ |
-| **api** | `runtime_test.go` | Runtime management | 🟡 Medium | 📋 |
+| **api** | `runtime_test.go` | Runtime management | 🟡 Medium | ✅ |
 | **service** | `polling_test.go` | Poll scheduler | 🔴 High | ✅ |
-| **service** | `command_handler_test.go` | Write commands | 🔴 High | 📋 |
+| **service** | `command_handler_test.go` | Write commands | 🔴 High | ✅ |
 | **health** | `checker_test.go` | Health aggregation | 🟡 Medium | ✅ |
 | **metrics** | `registry_test.go` | Prometheus metrics | 🟢 Low | ✅ |
 
-**Summary:** 22/28 implemented (79%)
+**Summary:** 28/28 implemented (100%)
 
 ### 2. Integration Tests (`testing/integration/`)
 
@@ -120,27 +122,27 @@ Tests against real protocols (simulators or hardware).
 | Protocol | Test File | Description | Requirements | Status |
 |----------|-----------|-------------|--------------|--------|
 | **Modbus** | `connection_test.go` | TCP connection lifecycle | Modbus simulator | ✅ |
-| **Modbus** | `register_read_test.go` | Read holding/input registers | Modbus simulator | 📋 |
-| **Modbus** | `coil_operations_test.go` | Read/write coils | Modbus simulator | 📋 |
-| **Modbus** | `error_handling_test.go` | Exception responses | Modbus simulator | 📋 |
-| **Modbus** | `reconnection_test.go` | Connection recovery | Modbus simulator | 📋 |
-| **OPC UA** | `connection_test.go` | Secure channel, session | OPC UA simulator | 📋 |
-| **OPC UA** | `browse_test.go` | Node browsing | OPC UA simulator | 📋 |
-| **OPC UA** | `read_write_test.go` | Read/write values | OPC UA simulator | 📋 |
-| **OPC UA** | `subscription_test.go` | Data change notifications | OPC UA simulator | 📋 |
+| **Modbus** | `register_read_test.go` | Read holding/input registers | Modbus simulator | ✅ |
+| **Modbus** | `coil_operations_test.go` | Read/write coils | Modbus simulator | ✅ |
+| **Modbus** | `error_handling_test.go` | Exception responses | Modbus simulator | ✅ |
+| **Modbus** | `reconnection_test.go` | Connection recovery, state transitions | Modbus simulator | ✅ |
+| **OPC UA** | `connection_test.go` | Secure channel, session | OPC UA simulator | ✅ |
+| **OPC UA** | `browse_test.go` | Node browsing | OPC UA simulator | ✅ |
+| **OPC UA** | `read_write_test.go` | Read/write values | OPC UA simulator | ✅ |
+| **OPC UA** | `subscription_test.go` | Data change notifications | OPC UA simulator | ✅ |
 | **OPC UA** | `security_test.go` | Auth modes, certificates | OPC UA simulator | 📋 |
 | **OPC UA** | `reconnection_test.go` | Session recovery | OPC UA simulator | 📋 |
-| **S7** | `connection_test.go` | S7comm connection | S7 simulator | 📋 |
+| **S7** | `connection_test.go` | S7comm connection, read/write, stats | S7 simulator | ✅ |
 | **S7** | `db_read_write_test.go` | Data block operations | S7 simulator | 📋 |
 | **S7** | `symbolic_test.go` | Symbolic addressing | S7 1200+ | 📋 |
 | **S7** | `error_handling_test.go` | Error responses | S7 simulator | 📋 |
-| **MQTT** | `connection_test.go` | Broker connection | MQTT broker | 📋 |
-| **MQTT** | `publish_test.go` | Message publishing | MQTT broker | 📋 |
+| **MQTT** | `connection_test.go` | Broker connection | MQTT broker | ✅ |
+| **MQTT** | `publish_test.go` | Single/batch/concurrent publishing | MQTT broker | ✅ |
 | **MQTT** | `qos_test.go` | QoS levels | MQTT broker | 📋 |
 | **MQTT** | `reconnection_test.go` | Broker reconnection | MQTT broker | 📋 |
 | **MQTT** | `buffering_test.go` | Offline buffering | MQTT broker | 📋 |
 
-**Summary:** 1/20 implemented (5%)
+**Summary:** 12/20 implemented (60%)
 
 ### 3. Benchmark Tests (`testing/benchmark/`)
 
@@ -149,54 +151,52 @@ Performance measurement and regression detection.
 | Category | Test File | Metrics | Status |
 |----------|-----------|---------|--------|
 | **Throughput** | `datapoint_test.go` | DataPoints/sec, pool efficiency | ✅ |
-| **Throughput** | `mqtt_publish_throughput_test.go` | Messages/sec | 📋 |
-| **Throughput** | `protocol_read_throughput_test.go` | Reads/sec per protocol | 📋 |
-| **Latency** | `read_latency_test.go` | P50/P95/P99 read times | 📋 |
-| **Latency** | `write_latency_test.go` | P50/P95/P99 write times | 📋 |
+| **Throughput** | `mqtt_publish_throughput_test.go` | Messages/sec, serialization, concurrency | ✅ |
+| **Throughput** | `protocol_read_throughput_test.go` | Reads/sec per protocol | ✅ |
+| **Latency** | `read_latency_test.go` | P50/P95/P99 read times | ✅ |
+| **Latency** | `write_latency_test.go` | P50/P95/P99 write times | ✅ |
 | **Latency** | `mqtt_latency_test.go` | Publish latency | 📋 |
-| **Memory** | `datapoint_alloc_test.go` | Bytes/op, allocs/op | 📋 |
-| **Memory** | `pool_efficiency_test.go` | Pool hit rate | 📋 |
+| **Memory** | `datapoint_alloc_test.go` | Bytes/op, allocs/op | ✅ |
+| **Memory** | `pool_efficiency_test.go` | Pool hit rate | ✅ |
 | **Memory** | `buffer_growth_test.go` | Buffer memory under load | 📋 |
 | **Concurrency** | `stress_test.go` | Parallel ops, race detection | ✅ |
-| **Concurrency** | `pool_contention_test.go` | Lock contention | 📋 |
+| **Concurrency** | `pool_contention_test.go` | Lock contention | ✅ |
 | **Concurrency** | `subscription_stress_test.go` | Many subscriptions | 📋 |
 
-**Summary:** 2/12 implemented (17%) |
-| **Concurrency** | `pool_contention_test.go` | Lock contention |
-| **Concurrency** | `subscription_stress_test.go` | Many subscriptions |
+**Summary:** 9/12 implemented (75%)
 
-### 4. Fuzz Tests (`testing/fuzz/`) - 📋 All Planned
+### 4. Fuzz Tests (`testing/fuzz/`)
 
 Discover edge cases and crashes with random inputs.
 
 | Category | Test File | Target | Status |
 |----------|-----------|--------|--------|
-| **Conversion** | `modbus_conversion_fuzz_test.go` | Byte order permutations | 📋 |
-| **Conversion** | `opcua_variant_fuzz_test.go` | UA Variant conversion | 📋 |
-| **Conversion** | `s7_type_fuzz_test.go` | S7 data types | 📋 |
-| **Conversion** | `scaling_fuzz_test.go` | Linear/reverse scaling | 📋 |
-| **Parsing** | `config_fuzz_test.go` | Config YAML parsing | 📋 |
-| **Parsing** | `address_fuzz_test.go` | Address string parsing | 📋 |
-| **Parsing** | `nodeid_fuzz_test.go` | OPC UA NodeID parsing | 📋 |
-| **Protocol** | `modbus_frame_fuzz_test.go` | Malformed Modbus frames | 📋 |
+| **Conversion** | `modbus_conversion_fuzz_test.go` | Byte order permutations | ✅ |
+| **Conversion** | `opcua_variant_fuzz_test.go` | UA Variant conversion | ✅ |
+| **Conversion** | `s7_type_fuzz_test.go` | S7 data types | ✅ |
+| **Conversion** | `scaling_fuzz_test.go` | Linear/reverse scaling | ✅ |
+| **Parsing** | `config_fuzz_test.go` | Config YAML parsing | ✅ |
+| **Parsing** | `address_fuzz_test.go` | Address string parsing | ✅ |
+| **Parsing** | `nodeid_fuzz_test.go` | OPC UA NodeID parsing | ✅ |
+| **Protocol** | `modbus_frame_fuzz_test.go` | Malformed Modbus frames, MBAP parsing | ✅ |
 | **Protocol** | `s7_packet_fuzz_test.go` | Malformed S7 packets | 📋 |
 
-**Summary:** 0/9 implemented (0%)
+**Summary:** 8/9 implemented (89%)
 
-### 5. End-to-End Tests (`testing/e2e/`) - 📋 All Planned
+### 5. End-to-End Tests (`testing/e2e/`)
 
 Complete workflow scenarios.
 
 | Scenario | Description | Status |
 |----------|-------------|--------|
-| `startup_shutdown_test.go` | Clean startup/shutdown cycle | 📋 |
-| `config_reload_test.go` | Hot config reload | 📋 |
-| `multi_device_test.go` | Multiple devices, mixed protocols | 📋 |
+| `startup_shutdown_test.go` | Clean startup/shutdown cycle | ✅ |
+| `config_reload_test.go` | Hot config reload | ✅ |
+| `multi_device_test.go` | Multiple devices, mixed protocols | ✅ |
 | `failover_test.go` | Device failure and recovery | 📋 |
 | `high_load_test.go` | Sustained high message rate | 📋 |
 | `memory_leak_test.go` | Long-running memory stability | 📋 |
 
-**Summary:** 0/6 implemented (0%)
+**Summary:** 3/6 implemented (50%)
 
 ---
 
@@ -285,12 +285,12 @@ docker-compose -f docker-compose.test.yaml down
 
 | Category | Implemented | Total | Progress |
 |----------|-------------|-------|----------|
-| Unit Tests | 22 | 28 | 79% |
-| Integration Tests | 1 | 20 | 5% |
-| Benchmark Tests | 2 | 12 | 17% |
-| Fuzz Tests | 0 | 9 | 0% |
-| E2E Tests | 0 | 6 | 0% |
-| **Total** | **25** | **75** | **33%** |
+| Unit Tests | 28 | 28 | 100% |
+| Integration Tests | 12 | 20 | 60% |
+| Benchmark Tests | 9 | 12 | 75% |
+| Fuzz Tests | 8 | 9 | 89% |
+| E2E Tests | 3 | 6 | 50% |
+| **Total** | **60** | **75** | **80%** |
 
 ### Implemented Tests ✅
 
@@ -319,8 +319,27 @@ docker-compose -f docker-compose.test.yaml down
 | `testing/unit/service/` | `polling_test.go` | Polling config, stats, throughput |
 | `testing/unit/api/` | `handlers_test.go` | Auth middleware, CORS, body limits |
 | `testing/integration/modbus/` | `connection_test.go` | TCP connection, read/write, recovery |
+| `testing/integration/modbus/` | `register_read_test.go` | Holding/input register reads |
+| `testing/integration/modbus/` | `coil_operations_test.go` | Coil read/write operations |
+| `testing/integration/modbus/` | `error_handling_test.go` | Exception responses, error recovery |
+| `testing/integration/opcua/` | `connection_test.go` | Secure channel, session, auth |
+| `testing/integration/opcua/` | `browse_test.go` | Node browsing, path traversal |
+| `testing/integration/mqtt/` | `connection_test.go` | Broker connection, reconnection |
 | `testing/benchmark/throughput/` | `datapoint_test.go` | Creation, pool, batch benchmarks |
+| `testing/benchmark/throughput/` | `protocol_read_throughput_test.go` | Protocol read throughput |
+| `testing/benchmark/latency/` | `read_latency_test.go` | Theoretical latency benchmarks |
+| `testing/benchmark/latency/` | `write_latency_test.go` | Write latency benchmarks |
+| `testing/benchmark/memory/` | `datapoint_alloc_test.go` | Memory allocation benchmarks |
+| `testing/benchmark/memory/` | `pool_efficiency_test.go` | Pool hit rate, efficiency |
 | `testing/benchmark/concurrency/` | `stress_test.go` | Parallel creation, pool contention |
+| `testing/benchmark/concurrency/` | `pool_contention_test.go` | Lock contention benchmarks |
+| `testing/fuzz/conversion/` | `modbus_conversion_fuzz_test.go` | Byte order, parsing fuzz tests |
+| `testing/fuzz/conversion/` | `scaling_fuzz_test.go` | Linear/reverse scaling fuzz tests |
+| `testing/fuzz/conversion/` | `opcua_variant_fuzz_test.go` | OPC UA variant type fuzzing |
+| `testing/fuzz/parsing/` | `config_fuzz_test.go` | Config/address parsing fuzz tests |
+| `testing/e2e/` | `startup_shutdown_test.go` | Gateway lifecycle tests |
+| `testing/e2e/` | `config_reload_test.go` | Hot configuration reload tests |
+| `testing/e2e/` | `multi_device_test.go` | Multi-device, mixed protocol tests |
 | `internal/domain/` | `datapoint_bench_test.go` | Original benchmarks |
 
 ### Support Files ✅
@@ -340,11 +359,11 @@ docker-compose -f docker-compose.test.yaml down
 | Location | File | Why Important |
 |----------|------|---------------|
 | `testing/unit/adapters/s7/` | `conversion_test.go` | S7 type conversion |
-| `testing/unit/adapters/modbus/` | `health_test.go` | Health check logic |
-| `testing/unit/adapters/opcua/` | `session_test.go` | Session management |
-| `testing/unit/adapters/s7/` | `health_test.go` | Health checks |
-| `testing/unit/service/` | `command_handler_test.go` | Write commands |
-| `testing/unit/api/` | `runtime_test.go` | Runtime management |
+| `testing/integration/s7/` | `connection_test.go` | S7 connection tests |
+| `testing/fuzz/conversion/` | `s7_type_fuzz_test.go` | S7 type fuzzing |
+| `testing/e2e/` | `failover_test.go` | Device failure scenarios |
+| `testing/e2e/` | `high_load_test.go` | Sustained load testing |
+| `testing/benchmark/` | `mqtt_publish_throughput_test.go` | MQTT throughput benchmarks |
 
 ---
 
@@ -479,4 +498,4 @@ jobs:
 
 ---
 
-*Last updated: 2026-02-02*
+*Last updated: 2025-02-02*

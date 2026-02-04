@@ -268,6 +268,12 @@ func (p *Publisher) Connect(ctx context.Context) error {
 		return fmt.Errorf("%w: %v", domain.ErrMQTTConnectionFailed, ctx.Err())
 	}
 
+	// Ensure connected state is set (callback might not have fired yet)
+	p.connected.Store(true)
+
+	// Reinitialize done channel for reconnection support
+	p.done = make(chan struct{})
+
 	// Start buffer processor
 	p.wg.Add(1)
 	go p.processBuffer()
@@ -280,8 +286,13 @@ func (p *Publisher) Connect(ctx context.Context) error {
 func (p *Publisher) Disconnect() {
 	p.logger.Info().Msg("Disconnecting from MQTT broker")
 
-	// Signal buffer processor to stop
-	close(p.done)
+	// Signal buffer processor to stop (safe close)
+	select {
+	case <-p.done:
+		// Already closed
+	default:
+		close(p.done)
+	}
 	p.wg.Wait()
 
 	// Disconnect client
