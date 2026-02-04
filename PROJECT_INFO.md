@@ -2,5 +2,5 @@
 
 - **Project Name**: Connector Gateway
 - **Author**: Alexander Ceule
-- **Current Version**: 2.1.1
-- **Date**: January 30, 2026
+- **Current Version**: 2.2.3
+- **Date**: February 4, 2026

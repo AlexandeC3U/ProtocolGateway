@@ -91,6 +91,8 @@ services:
     volumes:
       - ./config/devices.yaml:/app/config/devices.yaml
       - gateway-data:/app/data
+      # OPC UA PKI certificates (mount at runtime, don't bake into image)
+      - ./certs/pki:/app/certs/pki:ro
       # Optional (for Web UI Logs -> per-container logs):
       # Allows the gateway to call `docker ps` / `docker logs` on the host engine.
       - /var/run/docker.sock:/var/run/docker.sock

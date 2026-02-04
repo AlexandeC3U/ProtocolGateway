@@ -1,0 +1,2 @@
+# This directory holds the gateway's own public certificate(s)
+# Example: gateway-cert.pem, gateway-cert.der

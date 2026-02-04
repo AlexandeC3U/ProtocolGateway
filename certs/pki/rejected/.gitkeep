@@ -1,0 +1,3 @@
+# Rejected certificates land here during first connection
+# Admin reviews and moves to /trusted/certs if approved
+# This enables secure onboarding workflows

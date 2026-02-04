@@ -9,6 +9,15 @@ import (
 
 // dataPointPool is a sync.Pool for reusing DataPoint objects.
 // This reduces GC pressure in high-throughput scenarios.
+//
+// SAFETY WARNING: sync.Pool usage requires careful lifecycle management:
+//   - After calling ReleaseDataPoint(), the DataPoint MUST NOT be used again
+//   - Do NOT store pooled DataPoints in long-lived data structures
+//   - Do NOT pass pooled DataPoints to goroutines without ownership transfer
+//   - When in doubt, use NewDataPoint() instead of AcquireDataPoint()
+//
+// The current codebase uses NewDataPoint() for safety. AcquireDataPoint()
+// is available for future optimization of hot paths after profiling.
 var dataPointPool = sync.Pool{
 	New: func() interface{} {
 		return &DataPoint{}

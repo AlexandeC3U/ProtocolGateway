@@ -401,6 +401,18 @@ func (p *ConnectionPool) newClientForEndpoint(device *domain.Device) (*Client, e
 	if device.Connection.OPCKeyFile != "" {
 		clientConfig.PrivateKeyFile = device.Connection.OPCKeyFile
 	}
+	// Server certificate and security options
+	if device.Connection.OPCServerCertFile != "" {
+		clientConfig.ServerCertificateFile = device.Connection.OPCServerCertFile
+	}
+	clientConfig.InsecureSkipVerify = device.Connection.OPCInsecureSkipVerify
+	clientConfig.AutoSelectEndpoint = device.Connection.OPCAutoSelectEndpoint
+	if device.Connection.OPCApplicationName != "" {
+		clientConfig.ApplicationName = device.Connection.OPCApplicationName
+	}
+	if device.Connection.OPCApplicationURI != "" {
+		clientConfig.ApplicationURI = device.Connection.OPCApplicationURI
+	}
 	if clientConfig.RequestTimeout == 0 {
 		clientConfig.RequestTimeout = 5 * time.Second
 	}

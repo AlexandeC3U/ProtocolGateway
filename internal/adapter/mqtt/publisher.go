@@ -424,6 +424,9 @@ func (p *Publisher) bufferMessage(dataPoint *domain.DataPoint) error {
 func (p *Publisher) processBuffer() {
 	defer p.wg.Done()
 
+	backoff := 100 * time.Millisecond
+	maxBackoff := 5 * time.Second
+
 	for {
 		select {
 		case <-p.done:
@@ -438,22 +441,42 @@ func (p *Publisher) processBuffer() {
 					p.logger.Warn().Err(err).Str("topic", msg.Topic).Msg("Failed to publish buffered message")
 				}
 				cancel()
+				backoff = 100 * time.Millisecond // Reset backoff on success
 			} else {
-				// Re-buffer if not connected
+				// Re-buffer if not connected (non-blocking to avoid deadlock)
 				select {
 				case p.messageBuffer <- msg:
 				default:
 					// Buffer still full, drop message
+					p.logger.Debug().Str("topic", msg.Topic).Msg("Dropped message: buffer full while disconnected")
 				}
-				time.Sleep(100 * time.Millisecond)
+				// Exponential backoff to prevent spin-loop when disconnected
+				select {
+				case <-p.done:
+					return
+				case <-time.After(backoff):
+				}
+				if backoff < maxBackoff {
+					backoff *= 2
+				}
 			}
 		}
 	}
 }
 
 // drainBuffer attempts to publish all remaining buffered messages.
+// Timeout scales with buffer size: base 10s + 1ms per message, capped at 60s.
 func (p *Publisher) drainBuffer() {
-	timeout := time.After(5 * time.Second)
+	bufferLen := len(p.messageBuffer)
+	drainTimeout := 10*time.Second + time.Duration(bufferLen)*time.Millisecond
+	if drainTimeout > 60*time.Second {
+		drainTimeout = 60 * time.Second
+	}
+
+	p.logger.Debug().Int("buffered", bufferLen).Dur("timeout", drainTimeout).Msg("Draining message buffer")
+
+	timeout := time.After(drainTimeout)
+	drained := 0
 	for {
 		select {
 		case msg := <-p.messageBuffer:
@@ -461,16 +484,23 @@ func (p *Publisher) drainBuffer() {
 				ctx, cancel := context.WithTimeout(context.Background(), p.config.PublishTimeout)
 				if err := p.publishRaw(ctx, msg.Topic, msg.Payload, msg.QoS, msg.Retained); err != nil {
 					p.logger.Warn().Err(err).Str("topic", msg.Topic).Msg("Failed to drain buffered message")
+				} else {
+					drained++
 				}
 				cancel()
 			}
 		case <-timeout:
 			remaining := len(p.messageBuffer)
 			if remaining > 0 {
-				p.logger.Warn().Int("count", remaining).Msg("Timeout draining buffer, messages dropped")
+				p.logger.Warn().Int("drained", drained).Int("dropped", remaining).Msg("Timeout draining buffer, messages dropped")
+			} else if drained > 0 {
+				p.logger.Info().Int("drained", drained).Msg("Buffer drained successfully")
 			}
 			return
 		default:
+			if drained > 0 {
+				p.logger.Debug().Int("drained", drained).Msg("Buffer drained")
+			}
 			return
 		}
 	}

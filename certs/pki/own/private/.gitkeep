@@ -1,0 +1,3 @@
+# This directory holds the gateway's private key(s)
+# NEVER commit actual keys to git!
+# Example: gateway-key.pem

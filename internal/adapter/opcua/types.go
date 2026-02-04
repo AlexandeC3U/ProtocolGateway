@@ -70,11 +70,29 @@ type ClientConfig struct {
 	// Password for UserName authentication
 	Password string
 
-	// CertificateFile path for certificate authentication
+	// CertificateFile path for client certificate (PEM or DER format)
 	CertificateFile string
 
-	// PrivateKeyFile path for certificate authentication
+	// PrivateKeyFile path for client private key (PEM format)
 	PrivateKeyFile string
+
+	// ServerCertificateFile path for trusted server certificate (optional)
+	// If not provided, the client will trust any server certificate
+	ServerCertificateFile string
+
+	// InsecureSkipVerify disables server certificate verification
+	// WARNING: Only use for testing or when server cert is self-signed
+	InsecureSkipVerify bool
+
+	// AutoSelectEndpoint enables automatic endpoint discovery and security selection
+	// When true, the client queries available endpoints and selects the best match
+	AutoSelectEndpoint bool
+
+	// ApplicationName is the OPC UA application name for this client
+	ApplicationName string
+
+	// ApplicationURI is the OPC UA application URI for this client
+	ApplicationURI string
 
 	// Timeout is the connection and response timeout
 	Timeout time.Duration

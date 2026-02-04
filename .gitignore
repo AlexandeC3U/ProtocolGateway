@@ -74,3 +74,16 @@ prometheus_data/
 *.key
 *.crt
 secrets/
+
+# OPC UA PKI Certificates (keep private keys and actual certs out of git)
+certs/*.pem
+certs/*.key
+certs/**/*.pem
+certs/**/*.key
+certs/**/*.der
+certs/**/*.cer
+certs/**/*.p12
+certs/**/*.pfx
+!certs/README.md
+!certs/**/.gitkeep
+!certs/generate-certs.sh

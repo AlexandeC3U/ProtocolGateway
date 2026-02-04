@@ -37,12 +37,19 @@ type ConnectionConfig struct {
 	SlaveID int `yaml:"slave_id"`
 
 	// OPC UA
-	OPCEndpointURL    string `yaml:"opc_endpoint_url"`
-	OPCSecurityPolicy string `yaml:"opc_security_policy"`
-	OPCSecurityMode   string `yaml:"opc_security_mode"`
-	OPCAuthMode       string `yaml:"opc_auth_mode"`
-	OPCUsername       string `yaml:"opc_username"`
-	OPCPassword       string `yaml:"opc_password"`
+	OPCEndpointURL        string `yaml:"opc_endpoint_url"`
+	OPCSecurityPolicy     string `yaml:"opc_security_policy"`
+	OPCSecurityMode       string `yaml:"opc_security_mode"`
+	OPCAuthMode           string `yaml:"opc_auth_mode"`
+	OPCUsername           string `yaml:"opc_username"`
+	OPCPassword           string `yaml:"opc_password"`
+	OPCCertFile           string `yaml:"opc_cert_file"`
+	OPCKeyFile            string `yaml:"opc_key_file"`
+	OPCServerCertFile     string `yaml:"opc_server_cert_file"`
+	OPCInsecureSkipVerify bool   `yaml:"opc_insecure_skip_verify"`
+	OPCAutoSelectEndpoint bool   `yaml:"opc_auto_select_endpoint"`
+	OPCApplicationName    string `yaml:"opc_application_name"`
+	OPCApplicationURI     string `yaml:"opc_application_uri"`
 
 	// S7
 	S7Rack int `yaml:"s7_rack"`
@@ -227,12 +234,19 @@ func convertDeviceConfig(dc DeviceConfig) (*domain.Device, error) {
 			SlaveID: uint8(dc.Connection.SlaveID),
 
 			// OPC UA
-			OPCEndpointURL:    dc.Connection.OPCEndpointURL,
-			OPCSecurityPolicy: dc.Connection.OPCSecurityPolicy,
-			OPCSecurityMode:   dc.Connection.OPCSecurityMode,
-			OPCAuthMode:       dc.Connection.OPCAuthMode,
-			OPCUsername:       dc.Connection.OPCUsername,
-			OPCPassword:       dc.Connection.OPCPassword,
+			OPCEndpointURL:        dc.Connection.OPCEndpointURL,
+			OPCSecurityPolicy:     dc.Connection.OPCSecurityPolicy,
+			OPCSecurityMode:       dc.Connection.OPCSecurityMode,
+			OPCAuthMode:           dc.Connection.OPCAuthMode,
+			OPCUsername:           dc.Connection.OPCUsername,
+			OPCPassword:           dc.Connection.OPCPassword,
+			OPCCertFile:           dc.Connection.OPCCertFile,
+			OPCKeyFile:            dc.Connection.OPCKeyFile,
+			OPCServerCertFile:     dc.Connection.OPCServerCertFile,
+			OPCInsecureSkipVerify: dc.Connection.OPCInsecureSkipVerify,
+			OPCAutoSelectEndpoint: dc.Connection.OPCAutoSelectEndpoint,
+			OPCApplicationName:    dc.Connection.OPCApplicationName,
+			OPCApplicationURI:     dc.Connection.OPCApplicationURI,
 
 			// S7
 			S7Rack: dc.Connection.S7Rack,
@@ -373,12 +387,19 @@ func convertToDeviceConfig(device *domain.Device) DeviceConfig {
 			RetryDelay: device.Connection.RetryDelay.String(),
 
 			// OPC UA
-			OPCEndpointURL:    device.Connection.OPCEndpointURL,
-			OPCSecurityPolicy: device.Connection.OPCSecurityPolicy,
-			OPCSecurityMode:   device.Connection.OPCSecurityMode,
-			OPCAuthMode:       device.Connection.OPCAuthMode,
-			OPCUsername:       device.Connection.OPCUsername,
-			OPCPassword:       device.Connection.OPCPassword,
+			OPCEndpointURL:        device.Connection.OPCEndpointURL,
+			OPCSecurityPolicy:     device.Connection.OPCSecurityPolicy,
+			OPCSecurityMode:       device.Connection.OPCSecurityMode,
+			OPCAuthMode:           device.Connection.OPCAuthMode,
+			OPCUsername:           device.Connection.OPCUsername,
+			OPCPassword:           device.Connection.OPCPassword,
+			OPCCertFile:           device.Connection.OPCCertFile,
+			OPCKeyFile:            device.Connection.OPCKeyFile,
+			OPCServerCertFile:     device.Connection.OPCServerCertFile,
+			OPCInsecureSkipVerify: device.Connection.OPCInsecureSkipVerify,
+			OPCAutoSelectEndpoint: device.Connection.OPCAutoSelectEndpoint,
+			OPCApplicationName:    device.Connection.OPCApplicationName,
+			OPCApplicationURI:     device.Connection.OPCApplicationURI,
 
 			// S7
 			S7Rack: device.Connection.S7Rack,

@@ -88,31 +88,37 @@ func (c *Client) Connect(ctx context.Context) error {
 	c.sessionState = SessionStateConnecting
 	c.logger.Debug().Msg("Connecting to OPC UA server")
 
-	// Build client options
-	opts := []opcua.Option{
+	// Validate and load security configuration
+	secConfig, err := ValidateSecurityConfig(c.config, c.logger)
+	if err != nil {
+		c.lastError = err
+		c.sessionState = SessionStateError
+		return fmt.Errorf("%w: security configuration error: %v", domain.ErrConnectionFailed, err)
+	}
+
+	var opts []opcua.Option
+
+	// Auto-discover endpoint if enabled
+	if c.config.AutoSelectEndpoint {
+		discoveryCtx, cancel := context.WithTimeout(ctx, c.config.Timeout)
+		endpoint, err := DiscoverAndSelectEndpoint(discoveryCtx, c.config.EndpointURL, c.config, c.logger)
+		cancel()
+
+		if err != nil {
+			c.logger.Warn().Err(err).Msg("Endpoint discovery failed, using manual configuration")
+			opts = secConfig.BuildClientOptions()
+		} else {
+			opts = BuildOptionsFromEndpoint(endpoint, secConfig)
+		}
+	} else {
+		opts = secConfig.BuildClientOptions()
+	}
+
+	// Add timeout options
+	opts = append(opts,
 		opcua.RequestTimeout(c.config.RequestTimeout),
 		opcua.SessionTimeout(c.config.SessionTimeout),
-	}
-
-	// Configure security
-	secPolicy := c.getSecurityPolicy()
-
-	if secPolicy != ua.SecurityPolicyURINone {
-		opts = append(opts, opcua.SecurityPolicy(secPolicy))
-		opts = append(opts, opcua.SecurityModeString(c.config.SecurityMode))
-	}
-
-	// Configure authentication (default to Anonymous if not specified)
-	switch c.config.AuthMode {
-	case "UserName":
-		opts = append(opts, opcua.AuthUsername(c.config.Username, c.config.Password))
-	case "Certificate":
-		opts = append(opts, opcua.CertificateFile(c.config.CertificateFile))
-		opts = append(opts, opcua.PrivateKeyFile(c.config.PrivateKeyFile))
-	default:
-		// Default to Anonymous for empty string or explicit "Anonymous"
-		opts = append(opts, opcua.AuthAnonymous())
-	}
+	)
 
 	// Create client
 	client, err := opcua.NewClient(c.config.EndpointURL, opts...)
@@ -127,7 +133,6 @@ func (c *Client) Connect(ctx context.Context) error {
 
 	if err := client.Connect(connectCtx); err != nil {
 		// Ensure resources are released on failed handshakes/session creation.
-		// Without this, repeated retries can exhaust server session limits.
 		_ = client.Close(context.Background())
 		c.lastError = err
 		c.sessionState = SessionStateError
@@ -141,7 +146,11 @@ func (c *Client) Connect(ctx context.Context) error {
 	c.lastUsed = time.Now()
 	c.consecutiveFailures.Store(0)
 
-	c.logger.Info().Msg("Connected to OPC UA server")
+	c.logger.Info().
+		Str("policy", c.config.SecurityPolicy).
+		Str("mode", c.config.SecurityMode).
+		Str("auth", c.config.AuthMode).
+		Msg("Connected to OPC UA server")
 	return nil
 }
 
@@ -740,6 +749,10 @@ func (c *Client) valueToVariant(value interface{}, tag *domain.Tag) (*ua.Variant
 	}
 }
 
+// maxNodeCacheSize limits the node cache to prevent unbounded memory growth.
+// 50k entries is ~4MB assuming 80 bytes per entry (string key + NodeID pointer).
+const maxNodeCacheSize = 50000
+
 // getNodeID parses and caches a node ID.
 func (c *Client) getNodeID(nodeIDStr string) (*ua.NodeID, error) {
 	// Check cache
@@ -756,8 +769,20 @@ func (c *Client) getNodeID(nodeIDStr string) (*ua.NodeID, error) {
 		return nil, fmt.Errorf("%w: invalid node ID %s: %v", domain.ErrOPCUAInvalidNodeID, nodeIDStr, err)
 	}
 
-	// Cache it
+	// Cache it (with size limit)
 	c.nodeCacheMu.Lock()
+	if len(c.nodeCache) >= maxNodeCacheSize {
+		// Evict ~10% of entries when full (simple random eviction)
+		count := 0
+		for key := range c.nodeCache {
+			delete(c.nodeCache, key)
+			count++
+			if count >= maxNodeCacheSize/10 {
+				break
+			}
+		}
+		c.logger.Debug().Int("evicted", count).Msg("Evicted old node cache entries")
+	}
 	c.nodeCache[nodeIDStr] = nodeID
 	c.nodeCacheMu.Unlock()
 

@@ -147,6 +147,24 @@ type ConnectionConfig struct {
 	// OPCKeyFile path for private key (certificate authentication)
 	OPCKeyFile string `json:"opc_key_file,omitempty" yaml:"opc_key_file,omitempty"`
 
+	// OPCServerCertFile path for trusted server certificate (optional)
+	// If not provided, server certificate is not verified (insecure)
+	OPCServerCertFile string `json:"opc_server_cert_file,omitempty" yaml:"opc_server_cert_file,omitempty"`
+
+	// OPCInsecureSkipVerify disables server certificate verification
+	// WARNING: Only use for testing with self-signed certificates
+	OPCInsecureSkipVerify bool `json:"opc_insecure_skip_verify,omitempty" yaml:"opc_insecure_skip_verify,omitempty"`
+
+	// OPCAutoSelectEndpoint enables automatic endpoint discovery
+	// When true, queries available endpoints and selects best security match
+	OPCAutoSelectEndpoint bool `json:"opc_auto_select_endpoint,omitempty" yaml:"opc_auto_select_endpoint,omitempty"`
+
+	// OPCApplicationName is the client application name for OPC UA
+	OPCApplicationName string `json:"opc_application_name,omitempty" yaml:"opc_application_name,omitempty"`
+
+	// OPCApplicationURI is the client application URI for OPC UA
+	OPCApplicationURI string `json:"opc_application_uri,omitempty" yaml:"opc_application_uri,omitempty"`
+
 	// OPCPublishInterval is the subscription publish interval for OPC UA
 	OPCPublishInterval time.Duration `json:"opc_publish_interval,omitempty" yaml:"opc_publish_interval,omitempty"`
 

@@ -101,6 +101,20 @@ var S7AreaCode = map[domain.S7Area]int{
 	domain.S7AreaC:  0x1C, // Counters
 }
 
+// S7 Word Length constants for AGReadMulti/AGWriteMulti
+// These define the data type being read/written in multi-read operations.
+const (
+	S7WLBit   = 0x01 // Bit (1 bit)
+	S7WLByte  = 0x02 // Byte (8 bits)
+	S7WLWord  = 0x04 // Word (16 bits)
+	S7WLDWord = 0x06 // Double Word (32 bits)
+	S7WLReal  = 0x08 // Real (32 bits float)
+)
+
+// MaxMultiReadItems is the maximum items per AGReadMulti call.
+// S7 protocol typically allows 20 items per PDU.
+const MaxMultiReadItems = 20
+
 // =============================================================================
 // Buffer Pool for Memory Efficiency
 // =============================================================================

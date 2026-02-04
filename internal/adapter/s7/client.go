@@ -213,7 +213,8 @@ func (c *Client) ReadTag(ctx context.Context, tag *domain.Tag) (*domain.DataPoin
 	return dp, nil
 }
 
-// ReadTags reads multiple tags efficiently using batch reads where possible.
+// ReadTags reads multiple tags efficiently using AGReadMulti for true batch reads.
+// Groups tags by area and uses gos7's multi-read capability for up to 20 items per PDU.
 func (c *Client) ReadTags(ctx context.Context, tags []*domain.Tag) ([]*domain.DataPoint, error) {
 	if len(tags) == 0 {
 		return nil, nil
@@ -227,27 +228,170 @@ func (c *Client) ReadTags(ctx context.Context, tags []*domain.Tag) ([]*domain.Da
 		return nil, domain.ErrConnectionClosed
 	}
 
-	// Group tags by area for batch reading
-	groups := c.groupTagsByArea(tags)
 	results := make([]*domain.DataPoint, 0, len(tags))
 
-	for _, group := range groups {
-		for _, tag := range group {
-			select {
-			case <-ctx.Done():
-				return results, ctx.Err()
-			default:
-			}
-
-			dp, err := c.ReadTag(ctx, tag)
-			if err != nil {
-				c.logger.Warn().Err(err).Str("tag", tag.ID).Msg("Failed to read tag")
-			}
-			results = append(results, dp)
+	// Process tags in batches of MaxMultiReadItems (20)
+	for i := 0; i < len(tags); i += MaxMultiReadItems {
+		end := i + MaxMultiReadItems
+		if end > len(tags) {
+			end = len(tags)
 		}
+		batch := tags[i:end]
+
+		select {
+		case <-ctx.Done():
+			return results, ctx.Err()
+		default:
+		}
+
+		batchResults, err := c.readTagBatch(ctx, batch)
+		if err != nil {
+			c.logger.Warn().Err(err).Int("batch_start", i).Msg("Batch read failed, falling back to individual reads")
+			// Fallback to individual reads for this batch
+			for _, tag := range batch {
+				dp, readErr := c.ReadTag(ctx, tag)
+				if readErr != nil {
+					c.logger.Warn().Err(readErr).Str("tag", tag.ID).Msg("Failed to read tag")
+				}
+				results = append(results, dp)
+			}
+			continue
+		}
+		results = append(results, batchResults...)
 	}
 
 	return results, nil
+}
+
+// readTagBatch performs a multi-read operation for a batch of tags using AGReadMulti.
+// This is the performance-critical path that reduces N reads to 1.
+func (c *Client) readTagBatch(ctx context.Context, tags []*domain.Tag) ([]*domain.DataPoint, error) {
+	if len(tags) == 0 {
+		return nil, nil
+	}
+
+	// Prepare S7DataItems for each tag
+	dataItems := make([]gos7.S7DataItem, len(tags))
+	tagMeta := make([]struct {
+		tag       *domain.Tag
+		area      domain.S7Area
+		dbNumber  int
+		offset    int
+		bitOffset int
+	}, len(tags))
+
+	for i, tag := range tags {
+		area, dbNumber, offset, bitOffset, err := c.parseTagAddress(tag)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse address for tag %s: %w", tag.ID, err)
+		}
+
+		tagMeta[i].tag = tag
+		tagMeta[i].area = area
+		tagMeta[i].dbNumber = dbNumber
+		tagMeta[i].offset = offset
+		tagMeta[i].bitOffset = bitOffset
+
+		// Get area code
+		areaCode, ok := S7AreaCode[area]
+		if !ok {
+			return nil, fmt.Errorf("%w: %s for tag %s", domain.ErrS7InvalidArea, area, tag.ID)
+		}
+
+		// Calculate bytes to read and word length
+		byteCount := c.getByteCount(tag.DataType)
+		wordLen := c.getWordLength(tag.DataType)
+
+		// Allocate buffer for this item
+		dataItems[i] = gos7.S7DataItem{
+			Area:     areaCode,
+			WordLen:  wordLen,
+			DBNumber: dbNumber,
+			Start:    offset,
+			Bit:      bitOffset,
+			Amount:   byteCount,
+			Data:     make([]byte, byteCount),
+		}
+	}
+
+	// Serialize S7 operations
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+
+	c.mu.RLock()
+	client := c.client
+	c.mu.RUnlock()
+
+	if client == nil {
+		return nil, domain.ErrConnectionClosed
+	}
+
+	// Execute batch read
+	err := client.AGReadMulti(dataItems, len(dataItems))
+	if err != nil {
+		return nil, fmt.Errorf("%w: AGReadMulti failed: %v", domain.ErrS7ReadFailed, err)
+	}
+
+	// Convert results to DataPoints
+	results := make([]*domain.DataPoint, len(tags))
+	for i, item := range dataItems {
+		meta := tagMeta[i]
+		tag := meta.tag
+
+		// Check for per-item errors
+		if item.Error != "" {
+			c.stats.ErrorCount.Add(1)
+			c.recordTagError(tag.ID, fmt.Errorf(item.Error))
+			results[i] = c.createErrorDataPoint(tag, fmt.Errorf(item.Error))
+			continue
+		}
+
+		// Parse the raw bytes into a typed value
+		value, parseErr := c.parseValue(item.Data, tag, meta.bitOffset)
+		if parseErr != nil {
+			c.stats.ErrorCount.Add(1)
+			c.recordTagError(tag.ID, parseErr)
+			results[i] = c.createErrorDataPoint(tag, parseErr)
+			continue
+		}
+
+		// Apply scaling and offset
+		scaledValue := c.applyScaling(value, tag)
+
+		// Create data point
+		dp := domain.NewDataPoint(
+			c.deviceID,
+			tag.ID,
+			"", // Topic will be set by caller
+			scaledValue,
+			tag.Unit,
+			domain.QualityGood,
+		).WithRawValue(value)
+
+		results[i] = dp
+		c.stats.ReadCount.Add(1)
+		c.recordTagSuccess(tag.ID)
+	}
+
+	return results, nil
+}
+
+// getWordLength returns the S7 word length constant for a data type.
+func (c *Client) getWordLength(dataType domain.DataType) int {
+	switch dataType {
+	case domain.DataTypeBool:
+		return S7WLBit
+	case domain.DataTypeInt16, domain.DataTypeUInt16:
+		return S7WLWord
+	case domain.DataTypeInt32, domain.DataTypeUInt32:
+		return S7WLDWord
+	case domain.DataTypeFloat32:
+		return S7WLReal
+	case domain.DataTypeFloat64, domain.DataTypeInt64, domain.DataTypeUInt64:
+		return S7WLByte // Use byte mode for 8-byte types
+	default:
+		return S7WLByte
+	}
 }
 
 // WriteTag writes a value to a tag on the PLC.

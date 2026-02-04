@@ -49,15 +49,19 @@ Items are organized by **Phase** (priority) and **Component**.
 | 1 | API | Overly permissive CORS (CSRF risk) | `internal/api/handlers.go` | ⬜ |
 | 2 | API | Error messages leak internal paths | `internal/api/handlers.go` | ⬜ |
 | 3 | Config | `SetCallbacks` not thread-safe | `internal/api/handlers.go` | ⬜ |
-| 4 | OPC UA | Node cache unbounded growth | `internal/adapter/opcua/client.go` | ⬜ |
+| 4 | OPC UA | Node cache unbounded growth | `internal/adapter/opcua/client.go` | ✅ |
 | 5 | OPC UA | No StatusChangeNotification handling | `internal/adapter/opcua/subscription.go` | ⬜ |
-| 6 | OPC UA | Stats counters may overflow (uint64 wrap) | `internal/adapter/opcua/client.go` | ⬜ |
-| 7 | Modbus | Background goroutines ignore `Close()` | `internal/adapter/modbus/client.go` | ⬜ |
-| 8 | Modbus | Pool `Close()` has same map iteration bug | `internal/adapter/modbus/pool.go` | ⬜ |
-| 9 | S7 | Health check holds lock too long | `internal/adapter/s7/pool.go` | ⬜ |
-| 10 | MQTT | Buffer re-queue can infinite loop | `internal/adapter/mqtt/publisher.go` | ⬜ |
-| 11 | MQTT | `drainBuffer` timeout too short | `internal/adapter/mqtt/publisher.go` | ⬜ |
-| 12 | Domain | `sync.Pool` use-after-free risk | `internal/domain/datapoint.go` | ⬜ |
+| 6 | OPC UA | Stats counters may overflow (uint64 wrap) | `internal/adapter/opcua/client.go` | 🟡 |
+| 7 | Modbus | Background goroutines ignore `Close()` | `internal/adapter/modbus/client.go` | ✅ |
+| 8 | Modbus | Pool `Close()` has same map iteration bug | `internal/adapter/modbus/pool.go` | ✅ |
+| 9 | S7 | Health check holds lock too long | `internal/adapter/s7/pool.go` | ✅ |
+| 10 | MQTT | Buffer re-queue can infinite loop | `internal/adapter/mqtt/publisher.go` | ✅ |
+| 11 | MQTT | `drainBuffer` timeout too short | `internal/adapter/mqtt/publisher.go` | ✅ |
+| 12 | Domain | `sync.Pool` use-after-free risk | `internal/domain/datapoint.go` | 🟡 |
+
+**Notes:**
+- 🟡 #6: uint64 overflow takes ~584 years at 1M ops/sec - accepted risk with documentation
+- 🟡 #12: Documented with safety warnings; NewDataPoint() used by default for safety
 
 ---
 
@@ -73,7 +77,7 @@ Items are organized by **Phase** (priority) and **Component**.
 | 4 | Domain | Priority bounds (0-2) not enforced | ⬜ |
 | 5 | Domain | Quality/DataType enums not exhaustively validated | ⬜ |
 | 6 | OPC UA | Unused `getSecurityMode()` function (dead code) | ⬜ |
-| 7 | S7 | Batch reads not implemented (N tags = N round trips) | ⬜ |
+| 7 | S7 | Batch reads not implemented (N tags = N round trips) | ✅ |
 
 ---
 
