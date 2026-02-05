@@ -116,10 +116,23 @@ type Tag struct {
 	// Higher priority tags get dedicated worker pools and faster processing.
 	Priority uint8 `json:"priority,omitempty" yaml:"priority,omitempty"`
 
-	// OPCNodeID is the OPC UA node identifier (e.g., "ns=2;s=Temperature" or "ns=2;i=1234")
+	// OPCNodeID is the OPC UA node identifier. Supports two formats:
+	//   - Index-based (legacy):  "ns=2;s=Temperature" or "ns=2;i=1234"
+	//   - URI-based (preferred): "nsu=http://example.org/UA/;s=Temperature"
+	// The URI-based format (nsu=) is more stable across server restarts as namespace
+	// indices can change, while namespace URIs are globally unique and persistent.
+	// When using nsu=, the client automatically resolves the URI to the current index.
 	OPCNodeID string `json:"opc_node_id,omitempty" yaml:"opc_node_id,omitempty"`
 
+	// OPCNamespaceURI is the stable namespace URI for OPC UA (e.g., "http://example.org/UA/").
+	// If specified along with OPCNodeID, this URI takes precedence over any ns= in OPCNodeID.
+	// This provides a stable identifier that survives server restarts where namespace
+	// indices might be reordered. The client resolves this URI to the server's current
+	// namespace index at runtime.
+	OPCNamespaceURI string `json:"opc_namespace_uri,omitempty" yaml:"opc_namespace_uri,omitempty"`
+
 	// OPCNamespaceIndex is the OPC UA namespace index (if not included in OPCNodeID)
+	// Deprecated: Prefer using OPCNamespaceURI for stable configuration.
 	OPCNamespaceIndex uint16 `json:"opc_namespace_index,omitempty" yaml:"opc_namespace_index,omitempty"`
 
 	// === S7 (Siemens) Specific Fields ===

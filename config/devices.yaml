@@ -33,7 +33,13 @@ devices:
           register_type: holding_register
           byte_order: big_endian
           register_count: 1
+          # OPC UA NodeID - supports two formats:
+          # 1. Index-based (legacy): ns=2;s=Demo.Temperature
+          # 2. URI-based (preferred): nsu=urn:connector-gateway:sim;s=Demo.Temperature
+          # URI format is more stable across server restarts as namespace indices can change
           opc_node_id: ns=2;s=Demo.Temperature
+          # Alternative: use opc_namespace_uri for stable configuration
+          # opc_namespace_uri: urn:connector-gateway:sim
         - id: tag-1769444012598
           name: Pressure
           data_type: float64

@@ -761,6 +761,7 @@
                 
                 if (formData.protocol === 'opcua') {
                     newTag.opc_node_id = '';
+                    newTag.opc_namespace_uri = '';
                 } else if (formData.protocol === 's7') {
                     newTag.s7_address = '';
                 }
@@ -1137,15 +1138,28 @@
                                             )}
                                             
                                             {formData.protocol === 'opcua' && (
-                                                <div className="form-group">
-                                                    <label className="form-label">Node ID</label>
-                                                    <input 
-                                                        className="form-input"
-                                                        value={tag.opc_node_id || ''}
-                                                        onChange={(e) => handleTagChange(index, 'opc_node_id', e.target.value)}
-                                                        placeholder="ns=2;s=Temperature"
-                                                    />
-                                                </div>
+                                                <>
+                                                    <div className="form-group">
+                                                        <label className="form-label">Node ID</label>
+                                                        <input 
+                                                            className="form-input"
+                                                            value={tag.opc_node_id || ''}
+                                                            onChange={(e) => handleTagChange(index, 'opc_node_id', e.target.value)}
+                                                            placeholder="ns=2;s=Temperature or nsu=http://example.org/;s=Temperature"
+                                                        />
+                                                        <small className="form-hint">Supports ns= (index) or nsu= (URI) format. URI format is more stable.</small>
+                                                    </div>
+                                                    <div className="form-group">
+                                                        <label className="form-label">Namespace URI (optional)</label>
+                                                        <input 
+                                                            className="form-input"
+                                                            value={tag.opc_namespace_uri || ''}
+                                                            onChange={(e) => handleTagChange(index, 'opc_namespace_uri', e.target.value)}
+                                                            placeholder="http://example.org/UA/"
+                                                        />
+                                                        <small className="form-hint">Stable namespace identifier. Overrides ns= in Node ID if set.</small>
+                                                    </div>
+                                                </>
                                             )}
                                             
                                             {formData.protocol === 's7' && (

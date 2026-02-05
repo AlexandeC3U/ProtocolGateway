@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"math/rand/v2"
+	"strings"
 	"time"
 
 	"github.com/gopcua/opcua"
@@ -70,6 +71,7 @@ func NewClient(deviceID string, config ClientConfig, logger zerolog.Logger) (*Cl
 		deviceID:     deviceID,
 		lastUsed:     time.Now(),
 		nodeCache:    make(map[string]*ua.NodeID),
+		namespaceMap: make(map[string]uint16),
 		sessionState: SessionStateDisconnected,
 	}
 
@@ -146,10 +148,16 @@ func (c *Client) Connect(ctx context.Context) error {
 	c.lastUsed = time.Now()
 	c.consecutiveFailures.Store(0)
 
+	// Fetch namespace array from server for URI-based NodeID resolution
+	if err := c.updateNamespaceTable(ctx); err != nil {
+		c.logger.Warn().Err(err).Msg("Failed to fetch namespace table, URI-based NodeIDs may not resolve")
+	}
+
 	c.logger.Info().
 		Str("policy", c.config.SecurityPolicy).
 		Str("mode", c.config.SecurityMode).
 		Str("auth", c.config.AuthMode).
+		Int("namespaces", len(c.namespaceArray)).
 		Msg("Connected to OPC UA server")
 	return nil
 }
@@ -177,6 +185,12 @@ func (c *Client) Disconnect() error {
 	c.nodeCacheMu.Lock()
 	c.nodeCache = make(map[string]*ua.NodeID)
 	c.nodeCacheMu.Unlock()
+
+	// Clear namespace cache (will be repopulated on reconnect)
+	c.namespaceMu.Lock()
+	c.namespaceMap = make(map[string]uint16)
+	c.namespaceArray = nil
+	c.namespaceMu.Unlock()
 
 	c.logger.Debug().Msg("Disconnected from OPC UA server")
 	return nil
@@ -209,8 +223,8 @@ func (c *Client) ReadTag(ctx context.Context, tag *domain.Tag) (*domain.DataPoin
 		return nil, domain.ErrConnectionClosed
 	}
 
-	// Parse node ID
-	nodeID, err := c.getNodeID(tag.OPCNodeID)
+	// Parse node ID (supports both ns= and nsu= formats, plus OPCNamespaceURI field)
+	nodeID, err := c.getNodeIDForTag(tag)
 	if err != nil {
 		c.stats.ErrorCount.Add(1)
 		return c.createErrorDataPoint(tag, err), err
@@ -286,7 +300,8 @@ func (c *Client) ReadTags(ctx context.Context, tags []*domain.Tag) ([]*domain.Da
 	validTags := make([]*domain.Tag, 0, len(tags))
 
 	for _, tag := range tags {
-		nodeID, err := c.getNodeID(tag.OPCNodeID)
+		// Parse node ID (supports both ns= and nsu= formats, plus OPCNamespaceURI field)
+		nodeID, err := c.getNodeIDForTag(tag)
 		if err != nil {
 			c.logger.Warn().Err(err).Str("tag", tag.ID).Str("node_id", tag.OPCNodeID).Msg("Invalid node ID")
 			continue
@@ -359,8 +374,8 @@ func (c *Client) WriteTag(ctx context.Context, tag *domain.Tag, value interface{
 		return fmt.Errorf("%w: tag %s is not writable", domain.ErrWriteFailed, tag.ID)
 	}
 
-	// Parse node ID
-	nodeID, err := c.getNodeID(tag.OPCNodeID)
+	// Parse node ID (supports both ns= and nsu= formats, plus OPCNamespaceURI field)
+	nodeID, err := c.getNodeIDForTag(tag)
 	if err != nil {
 		c.stats.ErrorCount.Add(1)
 		return err
@@ -456,7 +471,8 @@ func (c *Client) WriteTags(ctx context.Context, writes []TagWrite) []error {
 			continue
 		}
 
-		nodeID, err := c.getNodeID(write.Tag.OPCNodeID)
+		// Parse node ID (supports both ns= and nsu= formats, plus OPCNamespaceURI field)
+		nodeID, err := c.getNodeIDForTag(write.Tag)
 		if err != nil {
 			errors[i] = err
 			continue
@@ -753,9 +769,10 @@ func (c *Client) valueToVariant(value interface{}, tag *domain.Tag) (*ua.Variant
 // 50k entries is ~4MB assuming 80 bytes per entry (string key + NodeID pointer).
 const maxNodeCacheSize = 50000
 
-// getNodeID parses and caches a node ID.
+// getNodeID parses and caches a node ID, with support for namespace URI resolution.
+// Supports both traditional "ns=2;s=Temperature" and URI-based "nsu=http://example.org/;s=Temperature" formats.
 func (c *Client) getNodeID(nodeIDStr string) (*ua.NodeID, error) {
-	// Check cache
+	// Check cache first
 	c.nodeCacheMu.RLock()
 	if nodeID, exists := c.nodeCache[nodeIDStr]; exists {
 		c.nodeCacheMu.RUnlock()
@@ -763,8 +780,17 @@ func (c *Client) getNodeID(nodeIDStr string) (*ua.NodeID, error) {
 	}
 	c.nodeCacheMu.RUnlock()
 
-	// Parse node ID
-	nodeID, err := ua.ParseNodeID(nodeIDStr)
+	var nodeID *ua.NodeID
+	var err error
+
+	// Check if this is a namespace URI-based NodeID (nsu=...)
+	if strings.HasPrefix(nodeIDStr, "nsu=") {
+		nodeID, err = c.parseExpandedNodeID(nodeIDStr)
+	} else {
+		// Traditional ns= format
+		nodeID, err = ua.ParseNodeID(nodeIDStr)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid node ID %s: %v", domain.ErrOPCUAInvalidNodeID, nodeIDStr, err)
 	}
@@ -787,6 +813,137 @@ func (c *Client) getNodeID(nodeIDStr string) (*ua.NodeID, error) {
 	c.nodeCacheMu.Unlock()
 
 	return nodeID, nil
+}
+
+// getNodeIDForTag resolves a NodeID for a tag, considering both OPCNodeID and OPCNamespaceURI fields.
+// If OPCNamespaceURI is specified, it takes precedence over any ns= in OPCNodeID.
+func (c *Client) getNodeIDForTag(tag *domain.Tag) (*ua.NodeID, error) {
+	nodeIDStr := tag.OPCNodeID
+
+	// If OPCNamespaceURI is specified, we need to resolve it and potentially modify the NodeID
+	if tag.OPCNamespaceURI != "" {
+		nsIndex, err := c.resolveNamespaceURI(tag.OPCNamespaceURI)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve namespace URI %q: %w", tag.OPCNamespaceURI, err)
+		}
+
+		// Build a new NodeID string with the resolved namespace index
+		nodeIDStr = c.buildNodeIDWithNamespace(tag.OPCNodeID, nsIndex)
+	}
+
+	return c.getNodeID(nodeIDStr)
+}
+
+// parseExpandedNodeID parses a NodeID with namespace URI (nsu=...) format.
+// Example: "nsu=http://example.org/;s=Temperature"
+func (c *Client) parseExpandedNodeID(nodeIDStr string) (*ua.NodeID, error) {
+	c.namespaceMu.RLock()
+	nsArray := c.namespaceArray
+	c.namespaceMu.RUnlock()
+
+	if len(nsArray) == 0 {
+		return nil, fmt.Errorf("namespace table not available, cannot resolve URI-based NodeID")
+	}
+
+	// Use gopcua's ParseExpandedNodeID which handles nsu= format
+	expandedNodeID, err := ua.ParseExpandedNodeID(nodeIDStr, nsArray)
+	if err != nil {
+		return nil, err
+	}
+
+	return expandedNodeID.NodeID, nil
+}
+
+// resolveNamespaceURI looks up a namespace URI in the server's namespace table
+// and returns the corresponding namespace index.
+func (c *Client) resolveNamespaceURI(nsURI string) (uint16, error) {
+	c.namespaceMu.RLock()
+	defer c.namespaceMu.RUnlock()
+
+	if idx, ok := c.namespaceMap[nsURI]; ok {
+		return idx, nil
+	}
+
+	return 0, fmt.Errorf("namespace URI %q not found in server's namespace table", nsURI)
+}
+
+// buildNodeIDWithNamespace constructs a NodeID string with the specified namespace index.
+// It handles both cases: when OPCNodeID already has ns= prefix and when it doesn't.
+func (c *Client) buildNodeIDWithNamespace(nodeIDStr string, nsIndex uint16) string {
+	// Remove existing ns= prefix if present
+	if strings.HasPrefix(nodeIDStr, "ns=") {
+		// Find the semicolon after ns=N
+		idx := strings.Index(nodeIDStr, ";")
+		if idx != -1 {
+			nodeIDStr = nodeIDStr[idx+1:]
+		}
+	} else if strings.HasPrefix(nodeIDStr, "nsu=") {
+		// Remove nsu= prefix
+		idx := strings.Index(nodeIDStr, ";")
+		if idx != -1 {
+			nodeIDStr = nodeIDStr[idx+1:]
+		}
+	}
+
+	// Build new NodeID with resolved namespace index
+	return fmt.Sprintf("ns=%d;%s", nsIndex, nodeIDStr)
+}
+
+// updateNamespaceTable fetches the namespace array from the server and builds the URI->index map.
+func (c *Client) updateNamespaceTable(ctx context.Context) error {
+	if c.client == nil {
+		return fmt.Errorf("client not connected")
+	}
+
+	// Fetch namespace array from server
+	nsArray, err := c.client.NamespaceArray(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to fetch namespace array: %w", err)
+	}
+
+	c.namespaceMu.Lock()
+	defer c.namespaceMu.Unlock()
+
+	c.namespaceArray = nsArray
+	c.namespaceMap = make(map[string]uint16, len(nsArray))
+
+	for idx, uri := range nsArray {
+		c.namespaceMap[uri] = uint16(idx)
+	}
+
+	c.logger.Debug().
+		Int("count", len(nsArray)).
+		Strs("namespaces", nsArray).
+		Msg("Fetched namespace table from server")
+
+	return nil
+}
+
+// GetNamespaceArray returns the current namespace array from the server.
+// This can be useful for diagnostics or building UI selectors.
+func (c *Client) GetNamespaceArray() []string {
+	c.namespaceMu.RLock()
+	defer c.namespaceMu.RUnlock()
+
+	if c.namespaceArray == nil {
+		return nil
+	}
+
+	// Return a copy to prevent external modification
+	result := make([]string, len(c.namespaceArray))
+	copy(result, c.namespaceArray)
+	return result
+}
+
+// RefreshNamespaceTable forces a refresh of the namespace table from the server.
+// Call this if you suspect the server's namespace table has changed.
+func (c *Client) RefreshNamespaceTable(ctx context.Context) error {
+	// Clear node cache since namespace indices may have changed
+	c.nodeCacheMu.Lock()
+	c.nodeCache = make(map[string]*ua.NodeID)
+	c.nodeCacheMu.Unlock()
+
+	return c.updateNamespaceTable(ctx)
 }
 
 // statusCodeToQuality converts OPC UA status code to domain quality.

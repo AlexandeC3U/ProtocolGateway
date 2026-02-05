@@ -43,6 +43,12 @@ type Client struct {
 	nodeCache    map[string]*ua.NodeID // Cache parsed node IDs
 	nodeCacheMu  sync.RWMutex
 
+	// Namespace URI to index mapping (fetched from server on connect)
+	// Key: namespace URI, Value: namespace index
+	namespaceMap   map[string]uint16
+	namespaceArray []string // The raw namespace array from server
+	namespaceMu    sync.RWMutex
+
 	// Consecutive failures for backoff reset
 	consecutiveFailures atomic.Int32
 
