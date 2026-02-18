@@ -50,7 +50,7 @@ type MockGateway struct {
 	state        atomic.Int32
 	httpServer   *http.Server
 	mqttClient   *MockMQTTClient
-	devices      []*MockDevice
+	devices      []*MockPollingDevice
 	mu           sync.RWMutex
 	startupTime  time.Duration
 	shutdownTime time.Duration
@@ -63,8 +63,8 @@ type MockMQTTClient struct {
 	messages  atomic.Int64
 }
 
-// MockDevice simulates a polling device.
-type MockDevice struct {
+// MockPollingDevice simulates a polling device.
+type MockPollingDevice struct {
 	name     string
 	protocol string
 	running  atomic.Bool
@@ -80,7 +80,7 @@ func NewMockGateway(deviceCount int, startupDelay, shutdownDelay time.Duration) 
 	}
 
 	for i := 0; i < deviceCount; i++ {
-		gw.devices = append(gw.devices, &MockDevice{
+		gw.devices = append(gw.devices, &MockPollingDevice{
 			name:     "device" + string(rune('1'+i)),
 			protocol: "modbus",
 		})

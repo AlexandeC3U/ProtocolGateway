@@ -120,6 +120,16 @@ test-e2e:
 	@echo "Running end-to-end tests..."
 	$(GOTEST) -v -tags=e2e ./testing/e2e/...
 
+# Run e2e high load tests (sustained throughput, burst recovery, backpressure)
+test-e2e-load:
+	@echo "Running e2e high load tests..."
+	$(GOTEST) -v -tags=e2e -run "TestHighLoad" -timeout 10m ./testing/e2e/...
+
+# Run e2e memory leak tests (heap stability, goroutine stability, GC effectiveness)
+test-e2e-memory:
+	@echo "Running e2e memory leak tests..."
+	$(GOTEST) -v -tags=e2e -run "TestMemoryLeak" -timeout 10m ./testing/e2e/...
+
 # Alias for e2e tests
 e2e: test-e2e
 
@@ -190,6 +200,11 @@ bench-memory:
 bench-latency:
 	@echo "Running latency benchmarks..."
 	$(GOTEST) -bench=. -benchmem ./testing/benchmark/latency/...
+
+# Run MQTT latency benchmarks
+bench-mqtt-latency:
+	@echo "Running MQTT latency benchmarks..."
+	$(GOTEST) -bench=BenchmarkMQTTLatency -benchmem -tags=benchmark ./testing/benchmark/latency/...
 
 # =============================================================================
 # Original Targets (continued)
@@ -315,6 +330,8 @@ help:
 	@echo "  make test-coverage-html - Generate HTML coverage report"
 	@echo "  make test-integration   - Run integration tests"
 	@echo "  make test-e2e           - Run end-to-end tests"
+	@echo "  make test-e2e-load      - Run e2e high load tests"
+	@echo "  make test-e2e-memory    - Run e2e memory leak tests"
 	@echo "  make test-fuzz          - Run fuzz tests (30s)"
 	@echo "  make test-race          - Run tests with race detector"
 	@echo "  make test-all           - Run full test suite"
@@ -325,6 +342,7 @@ help:
 	@echo "  make bench-concurrency  - Run concurrency benchmarks"
 	@echo "  make bench-memory       - Run memory benchmarks"
 	@echo "  make bench-latency      - Run latency benchmarks"
+	@echo "  make bench-mqtt-latency - Run MQTT latency benchmarks"
 	@echo ""
 	@echo "Test Environment:"
 	@echo "  make test-env-up        - Start test simulators"

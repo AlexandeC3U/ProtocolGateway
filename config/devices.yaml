@@ -1,11 +1,11 @@
 version: "1.0"
 devices:
-    - id: "5515"
-      name: Demo
+    - id: "123"
+      name: Test
       protocol: opcua
-      enabled: false
-      uns_prefix: plant1/area1/line1
-      poll_interval: 1s
+      enabled: true
+      uns_prefix: plant1/area1/line1/temp
+      poll_interval: 5s
       connection:
         host: nexus-opcua-sim
         port: 4840
@@ -29,25 +29,14 @@ devices:
         s7_rack: 0
         s7_slot: 0
       tags:
-        - id: tag-1771330199752
-          name: Temperature
+        - id: tag-1771432865992
+          name: temp
           data_type: float32
           scale_factor: 1
-          topic_suffix: Temperature
+          topic_suffix: temp
           enabled: true
           access_mode: read
           register_type: holding_register
           byte_order: big_endian
           register_count: 1
           opc_node_id: ns=2;s=Demo.Temperature
-        - id: tag-1771330236847
-          name: Switch
-          data_type: bool
-          scale_factor: 1
-          topic_suffix: Switch
-          enabled: true
-          access_mode: read
-          register_type: holding_register
-          byte_order: big_endian
-          register_count: 1
-          opc_node_id: ns=2;s=Demo.Switch

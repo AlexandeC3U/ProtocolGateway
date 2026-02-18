@@ -155,7 +155,7 @@ Performance measurement and regression detection.
 | **Throughput** | `protocol_read_throughput_test.go` | Reads/sec per protocol | ✅ |
 | **Latency** | `read_latency_test.go` | P50/P95/P99 read times | ✅ |
 | **Latency** | `write_latency_test.go` | P50/P95/P99 write times | ✅ |
-| **Latency** | `mqtt_latency_test.go` | Publish latency | 📋 |
+| **Latency** | `mqtt_latency_test.go` | Publish latency | ✅ |
 | **Memory** | `datapoint_alloc_test.go` | Bytes/op, allocs/op | ✅ |
 | **Memory** | `pool_efficiency_test.go` | Pool hit rate | ✅ |
 | **Memory** | `buffer_growth_test.go` | Buffer memory under load | 📋 |
@@ -163,7 +163,7 @@ Performance measurement and regression detection.
 | **Concurrency** | `pool_contention_test.go` | Lock contention | ✅ |
 | **Concurrency** | `subscription_stress_test.go` | Many subscriptions | 📋 |
 
-**Summary:** 9/12 implemented (75%)
+**Summary:** 10/12 implemented (83%)
 
 ### 4. Fuzz Tests (`testing/fuzz/`)
 
@@ -193,10 +193,10 @@ Complete workflow scenarios.
 | `config_reload_test.go` | Hot config reload | ✅ |
 | `multi_device_test.go` | Multiple devices, mixed protocols | ✅ |
 | `failover_test.go` | Device failure and recovery | 📋 |
-| `high_load_test.go` | Sustained high message rate | 📋 |
-| `memory_leak_test.go` | Long-running memory stability | 📋 |
+| `high_load_test.go` | Sustained high message rate | ✅ |
+| `memory_leak_test.go` | Long-running memory stability | ✅ |
 
-**Summary:** 3/6 implemented (50%)
+**Summary:** 5/6 implemented (83%)
 
 ---
 
@@ -287,10 +287,10 @@ docker-compose -f docker-compose.test.yaml down
 |----------|-------------|-------|----------|
 | Unit Tests | 28 | 28 | 100% |
 | Integration Tests | 12 | 20 | 60% |
-| Benchmark Tests | 9 | 12 | 75% |
+| Benchmark Tests | 10 | 12 | 83% |
 | Fuzz Tests | 8 | 9 | 89% |
-| E2E Tests | 3 | 6 | 50% |
-| **Total** | **60** | **75** | **80%** |
+| E2E Tests | 5 | 6 | 83% |
+| **Total** | **63** | **75** | **84%** |
 
 ### Implemented Tests ✅
 
@@ -329,6 +329,7 @@ docker-compose -f docker-compose.test.yaml down
 | `testing/benchmark/throughput/` | `protocol_read_throughput_test.go` | Protocol read throughput |
 | `testing/benchmark/latency/` | `read_latency_test.go` | Theoretical latency benchmarks |
 | `testing/benchmark/latency/` | `write_latency_test.go` | Write latency benchmarks |
+| `testing/benchmark/latency/` | `mqtt_latency_test.go` | MQTT publish latency, QoS comparison, jitter, SLA |
 | `testing/benchmark/memory/` | `datapoint_alloc_test.go` | Memory allocation benchmarks |
 | `testing/benchmark/memory/` | `pool_efficiency_test.go` | Pool hit rate, efficiency |
 | `testing/benchmark/concurrency/` | `stress_test.go` | Parallel creation, pool contention |
@@ -340,6 +341,8 @@ docker-compose -f docker-compose.test.yaml down
 | `testing/e2e/` | `startup_shutdown_test.go` | Gateway lifecycle tests |
 | `testing/e2e/` | `config_reload_test.go` | Hot configuration reload tests |
 | `testing/e2e/` | `multi_device_test.go` | Multi-device, mixed protocol tests |
+| `testing/e2e/` | `high_load_test.go` | Sustained throughput, burst recovery, backpressure, latency under load |
+| `testing/e2e/` | `memory_leak_test.go` | Heap stability, goroutine stability, device churn, GC effectiveness |
 | `internal/domain/` | `datapoint_bench_test.go` | Original benchmarks |
 
 ### Support Files ✅
