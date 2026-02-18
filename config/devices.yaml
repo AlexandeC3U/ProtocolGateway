@@ -1,108 +1,53 @@
 version: "1.0"
 devices:
-    - id: SIM
-      name: OPCUA
+    - id: "5515"
+      name: Demo
       protocol: opcua
-      enabled: true
+      enabled: false
       uns_prefix: plant1/area1/line1
-      poll_interval: 5s
+      poll_interval: 1s
       connection:
-        host: opcua-simulator
+        host: nexus-opcua-sim
         port: 4840
         timeout: 5s
         retry_count: 3
         retry_delay: 100ms
         slave_id: 1
-        opc_endpoint_url: opc.tcp://opcua-simulator:4840
+        opc_endpoint_url: opc.tcp://nexus-opcua-sim:4840
         opc_security_policy: ""
         opc_security_mode: ""
         opc_auth_mode: ""
         opc_username: ""
         opc_password: ""
+        opc_cert_file: ""
+        opc_key_file: ""
+        opc_server_cert_file: ""
+        opc_insecure_skip_verify: false
+        opc_auto_select_endpoint: false
+        opc_application_name: ""
+        opc_application_uri: ""
         s7_rack: 0
         s7_slot: 0
       tags:
-        - id: tag-1769443985390
-          name: Temp
-          data_type: float64
-          scale_factor: 1
-          unit: °C
-          topic_suffix: temperature
-          enabled: true
-          access_mode: readwrite
-          register_type: holding_register
-          byte_order: big_endian
-          register_count: 1
-          # OPC UA NodeID - supports two formats:
-          # 1. Index-based (legacy): ns=2;s=Demo.Temperature
-          # 2. URI-based (preferred): nsu=urn:connector-gateway:sim;s=Demo.Temperature
-          # URI format is more stable across server restarts as namespace indices can change
-          opc_node_id: ns=2;s=Demo.Temperature
-          # Alternative: use opc_namespace_uri for stable configuration
-          # opc_namespace_uri: urn:connector-gateway:sim
-        - id: tag-1769444012598
-          name: Pressure
-          data_type: float64
-          scale_factor: 1
-          topic_suffix: Pressure
-          enabled: true
-          access_mode: readwrite
-          register_type: holding_register
-          byte_order: big_endian
-          register_count: 1
-          opc_node_id: ns=2;s=Demo.Pressure
-        - id: tag-1769444038261
-          name: Status
-          data_type: string
-          scale_factor: 1
-          topic_suffix: Status
-          enabled: true
-          access_mode: readwrite
-          register_type: holding_register
-          byte_order: big_endian
-          register_count: 1
-          opc_node_id: ns=2;s=Demo.Status
-        - id: tag-1769444077413
-          name: Switch
-          data_type: bool
-          scale_factor: 1
-          topic_suffix: Switch
-          enabled: true
-          access_mode: readwrite
-          register_type: holding_register
-          byte_order: big_endian
-          register_count: 1
-          opc_node_id: ns=2;s=Demo.Switch
-    - id: Nexus
-      name: PLC_1
-      protocol: opcua
-      enabled: false
-      uns_prefix: plant1/area1/line2
-      poll_interval: 3s
-      connection:
-        host: 20.67.32.235
-        port: 4841
-        timeout: 5s
-        retry_count: 3
-        retry_delay: 100ms
-        slave_id: 1
-        opc_endpoint_url: opc.tcp://20.67.32.235:4841
-        opc_security_policy: ""
-        opc_security_mode: ""
-        opc_auth_mode: ""
-        opc_username: ""
-        opc_password: ""
-        s7_rack: 0
-        s7_slot: 0
-      tags:
-        - id: tag-1769791243632
-          name: TemperatureSensor
+        - id: tag-1771330199752
+          name: Temperature
           data_type: float32
           scale_factor: 1
-          topic_suffix: temp
+          topic_suffix: Temperature
           enabled: true
           access_mode: read
           register_type: holding_register
           byte_order: big_endian
           register_count: 1
-          opc_node_id: ns=1;s=PLC_1.TemperatureSensor
+          opc_node_id: ns=2;s=Demo.Temperature
+        - id: tag-1771330236847
+          name: Switch
+          data_type: bool
+          scale_factor: 1
+          topic_suffix: Switch
+          enabled: true
+          access_mode: read
+          register_type: holding_register
+          byte_order: big_endian
+          register_count: 1
+          opc_node_id: ns=2;s=Demo.Switch

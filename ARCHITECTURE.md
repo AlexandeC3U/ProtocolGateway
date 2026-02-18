@@ -2,7 +2,7 @@
 
 ## Comprehensive Technical Reference
 
-**Version:** 2.1.1  
+**Version:** 2.2.1
 **Classification:** Technical Architecture Specification  
 **Target Audience:** Software Architects, Senior Engineers, System Integrators
 
@@ -48,7 +48,7 @@
     - [10.1 Metrics Architecture](#101-metrics-architecture)
     - [10.2 Structured Logging](#102-structured-logging)
     - [10.3 Health Check System](#103-health-check-system)
-11. [Configuration Management](#11-configuration-management)
+11. [Security Architecture](#11-security-architecture)
     - [11.1 Transport Security](#111-transport-security)
     - [11.2 Credential Management](#112-credential-management)
     - [11.3 Network Security](#113-network-security)
@@ -56,18 +56,18 @@
     - [12.1 Container Architecture](#121-container-architecture)
     - [12.2 Docker Compose Architecture](#122-docker-compose-architecture)
     - [12.3 Kubernetes Deployment (Reference)](#123-kubernetes-deployment-reference)
-13. [Performance Engineering](#13-performance-engineering)
+13. [Web UI Architecture](#13-web-ui-architecture)
     - [13.1 Frontend Technology Stack](#131-frontend-technology-stack)
     - [13.2 API Endpoints](#132-api-endpoints)
-14. [Standards Compliance](#14-standards-compliance)
+14. [Testing Strategy](#14-testing-strategy)
     - [14.1 Test Architecture](#141-test-architecture)
     - [14.2 Simulator Infrastructure](#142-simulator-infrastructure)
-15. [API Reference](#15-api-reference)
+15. [Standards Compliance](#15-standards-compliance)
     - [15.1 Industrial Protocol Standards](#151-industrial-protocol-standards)
     - [15.2 Unified Namespace (UNS) Architecture](#152-unified-namespace-uns-architecture)
     - [15.3 Sparkplug B Compatibility](#153-sparkplug-b-compatibility)
-16. [Security Architecture](#16-security-architecture)
-17. [Appendices](#17-appendices)
+16. [Appendices](#16-appendices)
+17. [Conclusion](#17-conclusion)
 
 ---
 
@@ -92,15 +92,21 @@ The diagram below provides a visual summary of the gateway's core capabilities a
 │  │             │   │             │   │             │   │             │      │
 │  │ • Coils     │   │ • Sessions  │   │ • DB Blocks │   │ • QoS 0/1/2 │      │
 │  │ • Registers │   │ • Security  │   │ • Merkers   │   │ • TLS/mTLS  │      │
-│  │ • Batching  │   │ • Subscribe │   │ • I/O Areas │   │ • Buffering │      │
+│  │ • Batching  │   │ • Subscribe*│   │ • I/O Areas │   │ • Buffering │      │
 │  └─────────────┘   └─────────────┘   └─────────────┘   └─────────────┘      │
 │                                                                             │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │                      CROSS-CUTTING CONCERNS                         │    │
 │  │  • Connection Pooling    • Circuit Breakers    • Health Monitoring  │    │
 │  │  • Load Shaping          • Metrics Collection  • Hot Configuration  │    │
-│  │  • Object Pooling        • Graceful Shutdown   • Web UI Console     │    │
+│  │  • Object Pooling**      • Graceful Shutdown   • Web UI Console     │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  * Subscribe: SubscriptionManager is fully implemented but not yet wired    │
+│    into the polling path. All OPC UA reads currently use synchronous polls. │
+│  ** Object Pooling: Slice pools (polling) and S7 buffer pools are active.   │
+│     DataPoint sync.Pool exists but production uses NewDataPoint() for       │
+│     safety; AcquireDataPoint() reserved for future optimization.            │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -148,7 +154,7 @@ This diagram illustrates the complete data flow from industrial floor devices th
 │  │  │              │  │              │  │              │  │              │    │  │
 │  │  │ • TCP/RTU    │  │ • Sessions   │  │ • ISO-TCP    │  │ • EMQX/HiveMQ│    │  │
 │  │  │ • Per-Device │  │ • Per-Endpt  │  │ • Per-Device │  │ • Buffering  │    │  │
-│  │  │ • Batching   │  │ • Subscribe  │  │ • Batching   │  │ • QoS        │    │  │
+│  │  │ • Batching   │  │ • Security   │  │ • Batching   │  │ • QoS        │    │  │
 │  │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘    │  │
 │  │         │                 │                 │                 │            │  │
 │  │         └─────────────────┴─────────────────┴─────────────────┘            │  │
@@ -1026,9 +1032,13 @@ The Modbus adapter uses a per-device connection model with individual circuit br
 │  │  ┌───────────────────────────────────────────────────────────────────┐  │   │
 │  │  │                    Batch Optimization                             │  │   │
 │  │  │                                                                   │  │   │
+│  │  │  NOTE: Batch optimization applies to HOLDING and INPUT registers  │  │   │
+│  │  │  only. Coils and Discrete Inputs are read individually via        │  │   │
+│  │  │  readTagGroupIndividually() (bit-packed, no contiguous batching). │  │   │
+│  │  │                                                                   │  │   │
 │  │  │  Input Tags:  [R100, R101, R102, R103, R110, R111, R200]          │  │   │
 │  │  │                                                                   │  │   │
-│  │  │  Grouping Algorithm:                                              │  │   │
+│  │  │  Grouping Algorithm (Holding/Input registers):                    │  │   │
 │  │  │  1. Sort by RegisterType                                          │  │   │
 │  │  │  2. Within type, sort by Address                                  │  │   │
 │  │  │  3. Find contiguous ranges (max gap = 10)                         │  │   │
@@ -1150,7 +1160,7 @@ OPC UA sessions are heavyweight resources with security context and subscription
 │  Benefits:                                                                     │
 │  • Kepware server limit: 50-100 sessions → Support 200+ gateway devices        │
 │  • Reduced network overhead                                                    │
-│  • Shared subscription management                                              │
+│  • Session infrastructure supports shared subscription management              │
 │                                                                                │
 └────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -1207,6 +1217,14 @@ OPC UA sessions transition through multiple states during their lifecycle. This 
 │  • lastPublishTime: Prevents idle timeout with active subscriptions            │
 │  • consecutiveFailures: Triggers exponential backoff                           │
 │  • hasActiveSubscriptions: Preserves sessions with monitored items             │
+│                                                                                │
+│  ! IMPORTANT: OPC UA Subscription Support Status                               │
+│  The SubscriptionManager (subscription.go) is FULLY IMPLEMENTED with           │
+│  deadband filtering, notification handling, and recovery logic. However,       │
+│  it is NOT YET WIRED into the main polling path. All OPC UA devices            │
+│  currently use synchronous polling via ReadTags(). The Device domain           │
+│  model includes an OPCUseSubscriptions field (marked Phase 3) but it           │
+│  is not yet connected to the subscription infrastructure.                      │
 │                                                                                │
 └────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -1350,6 +1368,34 @@ Siemens S7 PLCs use symbolic addressing to access different memory areas. The di
 └────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+#### 6.3.2 Batch Read Strategy
+
+Unlike Modbus (which uses address-based contiguous range optimization), S7 uses **simple fixed-size chunking**. Tags are processed in groups of up to `MaxMultiReadItems` (20) using the `AGReadMulti()` function. There is no address-sorting or contiguous-range merging — tags are simply chunked sequentially:
+
+```
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                          S7 BATCH READ STRATEGY                                │
+│                                                                                │
+│  Input: 45 tags from device                                                    │
+│                                                                                │
+│  Chunking Algorithm (MaxMultiReadItems = 20):                                  │
+│  for i := 0; i < len(tags); i += MaxMultiReadItems                             │
+│                                                                                │
+│  ┌───────────────────────────────────────────────────────────────────────────┐ │
+│  │ Chunk 1: tags[0:20]   → AGReadMulti(20 items)                             │ │
+│  │ Chunk 2: tags[20:40]  → AGReadMulti(20 items)                             │ │
+│  │ Chunk 3: tags[40:45]  → AGReadMulti(5 items)                              │ │
+│  └───────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                │
+│  Result: 45 tags read with 3 AGReadMulti calls                                 │
+│                                                                                │
+│  Note: Unlike Modbus, there is no address-based optimization. Tags are         │
+│  chunked in their original order. Future optimization could sort by            │
+│  memory area and offset to improve PLC read efficiency.                        │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+```
+
 ### 6.4 MQTT Publisher
 
 #### 6.4.1 Message Flow Architecture
@@ -1460,7 +1506,7 @@ Each protocol requires a different connection pooling strategy based on its char
 │  │  • Simple 1:1 mapping simplifies health tracking                        │   │
 │  │                                                                         │   │
 │  │  Configuration:                                                         │   │
-│  │  • Max connections: 500 (configurable)                                  │   │
+│  │  • Max connections: 100 (configurable)                                  │   │
 │  │  • Idle timeout: 5 minutes                                              │   │
 │  │  • Health check: 30 seconds                                             │   │
 │  │                                                                         │   │
@@ -1480,7 +1526,7 @@ Each protocol requires a different connection pooling strategy based on its char
 │  │  • Subscription management benefits from session sharing                │   │
 │  │                                                                         │   │
 │  │  Configuration:                                                         │   │
-│  │  • Max endpoint sessions: 100 (not devices!)                            │   │
+│  │  • Max endpoint sessions: 50 (not devices!)                             │   │
 │  │  • Idle timeout: 5 minutes (respects active subscriptions)              │   │
 │  │  • Health check: 30 seconds                                             │   │
 │  │                                                                         │   │
@@ -1685,7 +1731,10 @@ This comprehensive flowchart traces a complete polling cycle from timer tick to 
 │  │  │                    Cleanup & Metrics                             │   │   │
 │  │  │                                                                  │   │   │
 │  │  │  - Release worker back to pool                                   │   │   │
-│  │  │  - Release DataPoints back to object pool                        │   │   │
+│  │  │  - Return DataPoint slice to slice pool (sync.Pool)              │   │   │
+│  │  │    Note: Individual DataPoints use NewDataPoint() (not pooled).  │   │   │
+│  │  │    AcquireDataPoint()/ReleaseDataPoint() exist but are reserved  │   │   │
+│  │  │    for future hot-path optimization after profiling.             │   │   │
 │  │  │  - Update device status (last poll time, error count)            │   │   │
 │  │  │  - Record poll duration in histogram                             │   │   │
 │  │  └──────────────────────────────────────────────────────────────────┘   │   │
@@ -2195,20 +2244,20 @@ Prometheus metrics enable operational dashboards (Grafana) and alerting. The dia
 │  │    → Counter: Total poll cycles per device                              │   │
 │  │    → Purpose: Track device-level reliability                            │   │
 │  │                                                                         │   │
-│  │  gateway_polling_polls_skipped_total{device_id, reason}                 │   │
-│  │    → Counter: Skipped polls (back-pressure, circuit breaker)            │   │
+│  │  gateway_polling_polls_skipped_total                                    │   │
+│  │    → Counter: Skipped polls (global, no per-device labels)              │   │
 │  │    → Purpose: Identify overload conditions                              │   │
 │  │                                                                         │   │
-│  │  gateway_polling_duration_seconds{device_id}                            │   │
+│  │  gateway_polling_duration_seconds{device_id, protocol}                  │   │
 │  │    → Histogram: Poll cycle duration                                     │   │
 │  │    → Purpose: Identify slow devices, optimize timeouts                  │   │
 │  │                                                                         │   │
-│  │  gateway_polling_points_read_total{device_id}                           │   │
-│  │    → Counter: Total data points successfully read                       │   │
+│  │  gateway_polling_points_read_total                                      │   │
+│  │    → Counter: Total data points successfully read (global)              │   │
 │  │    → Purpose: Throughput measurement                                    │   │
 │  │                                                                         │   │
-│  │  gateway_polling_points_published_total{device_id}                      │   │
-│  │    → Counter: Total data points published to MQTT                       │   │
+│  │  gateway_polling_points_published_total                                  │   │
+│  │    → Counter: Total data points published to MQTT (global)              │   │
 │  │    → Purpose: End-to-end throughput verification                        │   │
 │  │                                                                         │   │
 │  │  gateway_polling_worker_pool_utilization                                │   │
@@ -2958,10 +3007,17 @@ The testing strategy follows the test pyramid with unit tests at the base, integ
 │  │                                                                         │   │
 │  │  DataPoint Benchmarks (internal/domain/datapoint_bench_test.go):        │   │
 │  │                                                                         │   │
-│  │  BenchmarkDataPoint_New          → Direct allocation                    │   │
-│  │  BenchmarkDataPoint_Pool         → sync.Pool allocation                 │   │
-│  │  BenchmarkDataPoint_ToJSON       → JSON serialization                   │   │
-│  │  BenchmarkDataPoint_ToMQTTPayload → Compact format conversion           │   │
+│  │  BenchmarkDataPoint_ToMQTTPayload       → Compact format conversion     │   │
+│  │  BenchmarkDataPoint_ToMQTTPayload_JSONMarshal → JSON marshal comparison │   │
+│  │  BenchmarkDataPoint_ToJSON              → Full JSON serialization       │   │
+│  │                                                                         │   │
+│  │  Additional benchmarks (testing/benchmark/):                            │   │
+│  │  • throughput/datapoint_test.go: Creation, Pool, Batch, Parallel        │   │
+│  │  • throughput/protocol_read_throughput_test.go: Per-protocol reads      │   │
+│  │  • throughput/mqtt_publish_throughput_test.go: MQTT serialization       │   │
+│  │  • memory/datapoint_alloc_test.go: Alloc patterns, JSON, batches        │   │
+│  │  • concurrency/stress_test.go: Channel, mutex, RWMutex contention       │   │
+│  │  • latency/read_latency_test.go: Read latency profiles                  │   │
 │  │                                                                         │   │
 │  │  Expected Results:                                                      │   │
 │  │  • Pool allocation: ~50% fewer allocations than New                     │   │
@@ -3020,23 +3076,20 @@ Protocol simulators enable testing without physical industrial devices. The diag
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                │
 │  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │                    MQTT BROKER (EMQX)                                   │   │
+│  │                    MQTT BROKER (Test Stack)                             │   │
 │  │                                                                         │   │
-│  │  Image: emqx/emqx:5.5                                                   │   │
-│  │  Ports:                                                                 │   │
-│  │  • 1883: MQTT TCP                                                       │   │
-│  │  • 8083: MQTT WebSocket                                                 │   │
-│  │  • 8084: MQTT WebSocket Secure                                          │   │
-│  │  • 8883: MQTT TLS                                                       │   │
-│  │  • 18083: Dashboard                                                     │   │
+│  │  Test stack (docker-compose.test.yaml):                                 │   │
+│  │  Image: eclipse-mosquitto:2  (lightweight, no dashboard)                │   │
+│  │  Ports: 1883 (MQTT TCP), 9001 (WebSocket)                               │   │
+│  │  Config: testing/fixtures/mosquitto.conf                                │   │
 │  │                                                                         │   │
+│  │  Dev stack (docker-compose.yaml):                                       │   │
+│  │  Image: emqx/emqx:5.5  (full-featured, with dashboard)                  │   │
+│  │  Ports: 1883, 8083, 8084, 8883, 18083                                   │   │
 │  │  Dashboard: http://localhost:18083 (admin/public)                       │   │
 │  │                                                                         │   │
-│  │  Features for Testing:                                                  │   │
-│  │  • Message tracing                                                      │   │
-│  │  • Client inspection                                                    │   │
-│  │  • Topic statistics                                                     │   │
-│  │  • Rule engine for message transformation                               │   │
+│  │  Note: Integration tests use Mosquitto (test stack) while the dev       │   │
+│  │  environment uses EMQX with its dashboard and rule engine.              │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                │
 └────────────────────────────────────────────────────────────────────────────────┘
@@ -3106,7 +3159,7 @@ The gateway implements industry-standard protocols ensuring interoperability wit
 │  │  + GUID: ns=2;g=...                                                     │   │
 │  │  + ByteString: ns=2;b=...                                               │   │
 │  │                                                                         │   │
-│  │  Subscription Support:                                                  │   │
+│  │  Subscription Support (implemented, not yet wired into polling):        │   │
 │  │  + Monitored items with sampling interval                               │   │
 │  │  + Deadband filtering (absolute, percent)                               │   │
 │  │  + Queue size and discard policy                                        │   │
@@ -3405,13 +3458,19 @@ logging:
 │  ┌─────────────────────────────────────────────────────────────────────────┐   │
 │  │  MODBUS-SPECIFIC ERRORS                                                 │   │
 │  │                                                                         │   │
-│  │  ErrModbusIllegalFunction    Function code not supported (0x01)         │   │
-│  │  ErrModbusIllegalAddress     Invalid register address (0x02)            │   │
-│  │  ErrModbusIllegalValue       Invalid data value (0x03)                  │   │
-│  │  ErrModbusSlaveFailure       Slave device failure (0x04)                │   │
-│  │  ErrModbusAcknowledge        Request acknowledged, processing (0x05)    │   │
-│  │  ErrModbusSlaveBusy          Slave device busy (0x06)                   │   │
-│  │  ErrInvalidSlaveID           Slave ID must be 1-247                     │   │
+│  │  ErrModbusIllegalFunction        Function code not supported (0x01)     │   │
+│  │  ErrModbusIllegalAddress         Invalid data address (0x02)            │   │
+│  │  ErrModbusIllegalValue           Invalid data value (0x03)              │   │
+│  │  ErrModbusDeviceFailure          Slave device failure (0x04)            │   │
+│  │  ErrModbusAcknowledge            Long operation in progress (0x05)      │   │
+│  │  ErrModbusBusy                   Slave device busy (0x06)               │   │
+│  │  ErrModbusNegativeAck            Negative acknowledge (0x07)            │   │
+│  │  ErrModbusMemoryParityError      Memory parity error (0x08)             │   │
+│  │  ErrModbusGatewayPathUnavailable Gateway path unavailable (0x0A)        │   │
+│  │  ErrModbusGatewayTargetFailed    Target device no response (0x0B)       │   │
+│  │  ErrModbusProtocolLimit          Protocol limit exceeded                │   │
+│  │  ErrInvalidRegisterCount         Invalid register count                 │   │
+│  │  ErrInvalidSlaveID               Slave ID must be 1-247                 │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                │
 │  ┌─────────────────────────────────────────────────────────────────────────┐   │
@@ -3420,10 +3479,12 @@ logging:
 │  │  ErrOPCUAInvalidNodeID       Node ID format is invalid                  │   │
 │  │  ErrOPCUANodeNotFound        Node does not exist                        │   │
 │  │  ErrOPCUASubscriptionFailed  Failed to create subscription              │   │
-│  │  ErrOPCUATypeMismatch        Value type doesn't match node type         │   │
+│  │  ErrOPCUABadStatus           Bad status code from server                │   │
+│  │  ErrOPCUASecurityFailed      Security negotiation failed                │   │
+│  │  ErrOPCUASessionExpired      Session expired                            │   │
+│  │  ErrOPCUABrowseFailed        Browse operation failed                    │   │
 │  │  ErrOPCUAAccessDenied        Access denied to node                      │   │
-│  │  ErrOPCUATooManySessions     Server session limit reached               │   │
-│  │  ErrOPCUASecurityRejected    Security policy rejected                   │   │
+│  │  ErrOPCUAWriteNotPermitted   Write not permitted on node                │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                │
 │  ┌─────────────────────────────────────────────────────────────────────────┐   │
@@ -3431,9 +3492,19 @@ logging:
 │  │                                                                         │   │
 │  │  ErrS7ConnectionFailed       Failed to connect to PLC                   │   │
 │  │  ErrS7InvalidAddress         Invalid S7 address format                  │   │
+│  │  ErrS7InvalidDBNumber        Invalid data block number                  │   │
 │  │  ErrS7InvalidArea            Invalid memory area                        │   │
-│  │  ErrS7DataBlockNotFound      Data block does not exist                  │   │
-│  │  ErrS7AddressOutOfRange      Address exceeds block size                 │   │
+│  │  ErrS7InvalidOffset          Invalid offset                             │   │
+│  │  ErrS7ReadFailed             Read operation failed                      │   │
+│  │  ErrS7WriteFailed            Write operation failed                     │   │
+│  │  ErrS7CPUError               CPU error                                  │   │
+│  │  ErrS7PDUSizeMismatch        PDU size mismatch                          │   │
+│  │  ErrS7ItemNotAvailable       Item not available                         │   │
+│  │  ErrS7AddressOutOfRange      Address out of range                       │   │
+│  │  ErrS7WriteDataSizeMismatch  Write data size mismatch                   │   │
+│  │  ErrS7ObjectNotExist         Object does not exist                      │   │
+│  │  ErrS7HardwareFault          Hardware fault                             │   │
+│  │  ErrS7AccessingNotAllowed    Accessing not allowed                      │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                │
 │  ┌─────────────────────────────────────────────────────────────────────────┐   │
@@ -3442,7 +3513,21 @@ logging:
 │  │  ErrMQTTConnectionFailed     Failed to connect to broker                │   │
 │  │  ErrMQTTPublishFailed        Failed to publish message                  │   │
 │  │  ErrMQTTNotConnected         MQTT client not connected                  │   │
-│  │  ErrMQTTBufferFull           Message buffer overflow                    │   │
+│  │  ErrMQTTSubscribeFailed      Failed to subscribe to topic               │   │
+│  └─────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                │
+│  ┌─────────────────────────────────────────────────────────────────────────┐   │
+│  │  READ/WRITE ERRORS                                                      │   │
+│  │                                                                         │   │
+│  │  ErrReadFailed               Read operation failed                      │   │
+│  │  ErrWriteFailed              Write operation failed                     │   │
+│  │  ErrInvalidAddress           Invalid register address                   │   │
+│  │  ErrInvalidDataLength        Invalid data length                        │   │
+│  │  ErrInvalidDataType          Invalid data type                          │   │
+│  │  ErrInvalidRegisterType      Invalid register type                      │   │
+│  │  ErrTagNotWritable           Tag is not writable                        │   │
+│  │  ErrInvalidWriteValue        Invalid value for write operation          │   │
+│  │  ErrWriteTimeout             Write operation timed out                  │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                │
 │  ┌─────────────────────────────────────────────────────────────────────────┐   │
@@ -3450,10 +3535,12 @@ logging:
 │  │                                                                         │   │
 │  │  ErrServiceNotStarted        Service has not been started               │   │
 │  │  ErrServiceStopped           Service has been stopped                   │   │
-│  │  ErrServiceOverloaded        Service is overloaded                      │   │
-│  │  ErrDeviceNotFound           Device not found in configuration          │   │
+│  │  ErrServiceOverloaded        Service overloaded (brownout mode)         │   │
+│  │  ErrDeviceNotFound           Device not found                           │   │
+│  │  ErrDeviceExists             Device already exists                      │   │
 │  │  ErrTagNotFound              Tag not found on device                    │   │
-│  │  ErrProtocolNotSupported     Protocol not registered                    │   │
+│  │  ErrInvalidConfig            Invalid configuration                      │   │
+│  │  ErrProtocolNotSupported     Protocol not supported                     │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                │
 └────────────────────────────────────────────────────────────────────────────────┘
@@ -3507,7 +3594,7 @@ This Protocol Gateway represents a production-grade implementation of a multi-pr
 **Scalability**
 - Connection pooling with per-endpoint session sharing (OPC UA)
 - Worker pool-based polling with back-pressure handling
-- Object pooling for high-throughput data point processing
+- Slice and buffer pooling for reduced GC pressure; DataPoint object pool ready for future optimization
 
 **Reliability**
 - Multi-tier circuit breakers preventing cascade failures

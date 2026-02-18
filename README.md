@@ -1,161 +1,154 @@
+# Protocol Gateway
 
-# Connector Gateway (Protocol Gateway) — Quick Start
+![Go](https://img.shields.io/badge/Go-1.22-00ADD8?logo=go&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)
+![MQTT](https://img.shields.io/badge/MQTT-EMQX_5.5-660066)
+![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus&logoColor=white)
+![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana&logoColor=white)
+![OPC UA](https://img.shields.io/badge/OPC_UA-00539B)
+![Modbus](https://img.shields.io/badge/Modbus_TCP/RTU-4B8BBE)
+![Siemens S7](https://img.shields.io/badge/Siemens_S7-009999)
 
-This repo runs a small dev stack with:
+An industrial-grade protocol gateway that bridges **Modbus TCP/RTU**, **OPC UA**, and **Siemens S7** devices to **MQTT** following the **Unified Namespace (UNS)** pattern. Built in Go with connection pooling, circuit breakers, and full observability.
 
-- **Protocol Gateway** (Go)
-- **EMQX** (MQTT broker)
-- **OPC UA Simulator** (Python `asyncua`) for local testing
+```
+  Industrial Devices              Protocol Gateway                  IT Infrastructure
+ ┌──────────────────┐          ┌───────────────────────┐          ┌──────────────────┐
+ │  Modbus TCP/RTU  │─────────>│  Polling Engine       │─────────>│   MQTT Broker    │
+ │  OPC UA Servers  │─────────>│  Protocol Adapters    │          │   (EMQX)         │
+ │  Siemens S7 PLCs │─────────>│  Circuit Breakers     │<─────────│   Write Commands │
+ └──────────────────┘          │  Web UI  :8080        │          └──────────────────┘
+                               │  Metrics :8080/metrics│────────> Prometheus + Grafana
+                               └───────────────────────┘
+```
+
+**Key features:** Per-device polling with worker pools | Batch read optimization | Per-endpoint OPC UA session sharing | MQTT buffering during disconnects | Bidirectional write commands | Web UI for device management | Prometheus metrics & Grafana dashboards | Kubernetes-ready health probes
+
+> For detailed architecture documentation, see [docs/](docs/INDEX.md).
+
+---
 
 ## Prerequisites
 
-- Docker Desktop (Compose v2)
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) with Compose v2
 
-## 1) Clone
+---
+
+## Quick Start
+
+### 1. Clone & start
 
 ```bash
 git clone https://github.com/AlexandeC3U/ProtocolGateway
 cd Connector_Gateway
+docker compose up --build
 ```
 
-## 2) Start the dev stack
+### 2. Open the dashboards
 
-This starts **EMQX**, the **OPC UA simulator**, and the **gateway**.
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| **Gateway Web UI** | http://localhost:8080 | - |
+| **EMQX Dashboard** | http://localhost:18083 | `admin` / `public` |
+| **Prometheus** | http://localhost:9090 | - |
+| **Grafana** | http://localhost:3000 | `admin` / `admin` |
+
+### 3. Stop
 
 ```bash
-docker compose -f docker-compose.yaml up --build
+docker compose down        # keeps data volumes
+docker compose down -v     # removes data volumes
 ```
 
-Open:
+---
 
-- Web UI: `http://localhost:8080`
-- EMQX dashboard: `http://localhost:18083`
+## Adding a Device (OPC UA Simulator Example)
 
-Stop:
+The dev stack includes a Python OPC UA simulator with demo variables. In the Web UI (**Devices** > **Add Device**):
+
+| Field | Value |
+|-------|-------|
+| Protocol | `opcua` |
+| Device ID | `SIM` |
+| Name | `OPC-UA Simulator` |
+| Enabled | `true` |
+| UNS Prefix | `plant1/area1/line1` |
+| Poll Interval | `5s` |
+| OPC Endpoint URL | `opc.tcp://opcua-simulator:4840` |
+| Security / Auth | Leave defaults (simulator uses NoSecurity) |
+
+### Demo tags
+
+Add the following tags (each needs a unique `topic_suffix`):
+
+| Name | Data Type | Topic Suffix | OPC Node ID |
+|------|-----------|-------------|-------------|
+| Temperature | `float64` | `temperature` | `ns=2;s=Demo.Temperature` |
+| Pressure | `float64` | `pressure` | `ns=2;s=Demo.Pressure` |
+| Status | `string` | `status` | `ns=2;s=Demo.Status` |
+| Switch | `bool` | `switch` | `ns=2;s=Demo.Switch` |
+
+### Verify MQTT messages
+
+Subscribe with any MQTT client to `plant1/#` on `localhost:1883`:
 
 ```bash
-docker compose -f docker-compose.yaml down
+mosquitto_sub -h localhost -p 1883 -t 'plant1/#' -v
 ```
 
-## 3) Add an OPC UA device (simulator) in the Web UI
-
-In the Web UI, go to **Devices** → **Add Device** and use:
-
-- **Protocol**: `opcua`
-- **Device ID**: e.g. `SIM2`
-- **Name**: e.g. `OPCUA-SIM`
-- **Enabled**: `true`
-- **UNS Prefix**: `plant1/area1/line1`
-- **Poll interval**: `5s`
-
-Connection:
-
-- **OPC Endpoint URL**: `opc.tcp://opcua-simulator:4840`
-- **Security Policy/Mode/Auth**: leave empty / defaults (simulator is **NoSecurity**)
-
-### Add tags (4 demo nodes)
-
-Add 4 tags and make sure each tag has a **unique** `topic_suffix`.
-
-1) Temperature
-
-- **Name**: `Temperature`
-- **Data type**: `float32` or `float64`
-- **Unit**: `°C`
-- **Topic suffix**: `temperature`
-- **OPC Node ID**: `ns=2;s=Demo.Temperature`
-
-2) Pressure
-
-- **Name**: `Pressure`
-- **Data type**: `float32` or `float64`
-- **Topic suffix**: `pressure`
-- **OPC Node ID**: `ns=2;s=Demo.Pressure`
-
-3) Status
-
-- **Name**: `Status`
-- **Data type**: `string`
-- **Topic suffix**: `status`
-- **OPC Node ID**: `ns=2;s=Demo.Status`
-
-4) Switch
-
-- **Name**: `Switch`
-- **Data type**: `bool`
-- **Topic suffix**: `switch`
-- **OPC Node ID**: `ns=2;s=Demo.Switch`
-
-Expected MQTT topics:
-
-- `plant1/area1/line1/temperature`
-- `plant1/area1/line1/pressure`
-- `plant1/area1/line1/status`
-- `plant1/area1/line1/switch`
-
-Payload format:
+Expected payload format:
 
 ```json
 {"v": 20.1, "u": "°C", "q": "good", "ts": 1769445124645}
 ```
 
-## 4) Verify messages in MQTT
+> **Tip:** If using MQTT Explorer, subscribe to `plant1/#` (not `#`). Subscribing to `#` may be denied by broker access control.
 
-Subscribe with any MQTT client to `plant1/#` on `localhost:1883`.
+---
 
-If you use **MQTT Explorer**, subscribe to `plant1/#` (not `#`). In this setup, subscribing to `#` is denied by broker access control.
+## Write Commands
 
-Example with `mosquitto_sub`:
+The gateway supports bidirectional communication. Write values to device tags via MQTT:
+
+**Topic pattern:** `$nexus/cmd/{device_id}/{tag_id}/set`
+
+**Example** (toggle the Switch tag):
 
 ```bash
-mosquitto_sub -h localhost -p 1883 -t 'plant1/#' -v
+mosquitto_pub -h localhost -p 1883 -t '$nexus/cmd/SIM/switch/set' -m 'true'
 ```
-## 5) Testing Write Commands
 
-You can write values to tags using the EMQX dashboard or any MQTT client.
+Accepted boolean values: `true`, `True`, `1`, `false`, `False`, `0`
+For numeric tags, send the value directly (e.g., `25.5`).
 
-### Using EMQX Dashboard
-
-1. Open the EMQX dashboard: `http://localhost:18083` (default login: `admin` / `public`)
-2. Go to **Diagnose** → **WebSocket Client**
-3. Click **Connect**
-4. To publish a write command:
-   - **Topic**: `$nexus/cmd/{device_id}/{tag_id}/set`
-   - **Payload**: The value to write
-
-### Example: Writing to the Switch tag
-
-- **Topic**: `$nexus/cmd/SIM/tag-1769444077413/set`
-- **Payload**: `true`, `True`, `1`, `false`, `False`, or `0`
-
-For numeric tags, send the value directly (e.g., `25.5` for temperature).
-
-### Write Response
-
-The gateway publishes a response to `$nexus/cmd/{device_id}/{tag_id}/response`:
+**Response** (published to `$nexus/cmd/{device_id}/{tag_id}/response`):
 
 ```json
-{"device_id":"SIM","tag_id":"tag-1769444077413","success":true,"timestamp":"2026-01-27T12:00:00Z","duration_ms":45}
-```## 6) Health & Metrics Endpoints
+{"device_id": "SIM", "tag_id": "switch", "success": true, "timestamp": "2026-01-27T12:00:00Z", "duration_ms": 45}
+```
 
-The gateway exposes several HTTP endpoints for monitoring and observability on port **8080**.
+You can also send write commands from the EMQX Dashboard: **Diagnose** > **WebSocket Client** > **Connect** > publish to the command topic.
 
-### Health Endpoints
+---
 
-| Endpoint | Description | Use Case |
-|----------|-------------|----------|
-| `/health` | Full health status with all component checks | Detailed diagnostics |
-| `/health/live` | Liveness probe (is the service running?) | Kubernetes liveness probe |
-| `/health/ready` | Readiness probe (is the service ready to accept traffic?) | Kubernetes readiness probe |
-| `/status` | Basic service status with polling statistics | Quick status check |
+## Health & Monitoring
 
-#### Example: Full Health Check
+### Health endpoints
+
+| Endpoint | Purpose | Usage |
+|----------|---------|-------|
+| `GET /health` | Full health status with component checks | Detailed diagnostics |
+| `GET /health/live` | Liveness probe | Kubernetes `livenessProbe` |
+| `GET /health/ready` | Readiness probe | Kubernetes `readinessProbe` |
+| `GET /status` | Polling statistics | Quick status check |
+
+<details>
+<summary>Example: Full health check response</summary>
 
 ```bash
 curl http://localhost:8080/health | jq
 ```
 
-Response:
 ```json
 {
   "status": "healthy",
@@ -172,67 +165,21 @@ Response:
 }
 ```
 
-#### Example: Liveness Probe
+</details>
 
-```bash
-curl -w "%{http_code}" http://localhost:8080/health/live
-# Returns 200 if alive, 503 if not
-```
+### Prometheus metrics
 
-#### Example: Readiness Probe
+The `/metrics` endpoint exposes Prometheus-compatible metrics:
 
-```bash
-curl -w "%{http_code}" http://localhost:8080/health/ready
-# Returns 200 if ready, 503 if not ready
-```
+| Category | Key Metrics |
+|----------|-------------|
+| **Connections** | `gateway_connections_active`, `gateway_connections_errors_total`, `gateway_connections_latency_seconds` |
+| **Polling** | `gateway_polling_polls_total`, `gateway_polling_duration_seconds`, `gateway_polling_points_read_total` |
+| **MQTT** | `gateway_mqtt_messages_published_total`, `gateway_mqtt_messages_failed_total`, `gateway_mqtt_buffer_size` |
+| **Devices** | `gateway_devices_registered`, `gateway_devices_online` |
 
-#### Example: Status Endpoint
-
-```bash
-curl http://localhost:8080/status | jq
-```
-
-Response:
-```json
-{
-  "service": "protocol-gateway",
-  "version": "1.0.0",
-  "polling": {
-    "total_polls": 1234,
-    "success_polls": 1200,
-    "failed_polls": 34,
-    "skipped_polls": 0,
-    "points_read": 4800,
-    "points_published": 4800
-  }
-}
-```
-
-### Metrics Endpoint (Prometheus)
-
-The `/metrics` endpoint exposes Prometheus-compatible metrics for monitoring dashboards (Grafana, etc.).
-
-```bash
-curl http://localhost:8080/metrics
-```
-
-#### Key Metrics
-
-| Metric | Type | Description |
-|--------|------|-------------|
-| `gateway_connections_active` | Gauge | Active connections per protocol |
-| `gateway_connections_attempts_total` | Counter | Total connection attempts |
-| `gateway_connections_errors_total` | Counter | Total connection errors |
-| `gateway_polling_polls_total` | Counter | Total poll operations (by device/status) |
-| `gateway_polling_polls_skipped_total` | Counter | Polls skipped due to back-pressure |
-| `gateway_polling_duration_seconds` | Histogram | Poll cycle duration |
-| `gateway_polling_points_read_total` | Counter | Data points read |
-| `gateway_polling_points_published_total` | Counter | Data points published |
-| `gateway_mqtt_messages_published_total` | Counter | MQTT messages published |
-| `gateway_mqtt_messages_failed_total` | Counter | Failed MQTT publishes |
-| `gateway_mqtt_reconnects_total` | Counter | MQTT reconnection attempts |
-
-#### Example Prometheus Query
+<details>
+<summary>Example PromQL queries</summary>
 
 ```promql
 # Poll success rate over last 5 minutes
@@ -243,95 +190,88 @@ gateway_connections_active
 
 # MQTT publish error rate
 rate(gateway_mqtt_messages_failed_total[5m])
-```
-
-### Using with Docker Compose Health Checks
-
-The `docker-compose.yaml` is pre-configured to use the liveness endpoint:
-
-```yaml
-healthcheck:
-  test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/live"]
-  interval: 10s
-  timeout: 5s
-  retries: 3
-```
-
-## 7) Prometheus & Grafana Monitoring
-
-The docker-compose stack includes **Prometheus** for metrics collection and optionally **Grafana** for visualization.
-
-### Starting with Prometheus (default)
-
-Prometheus starts automatically with the stack:
-
-```bash
-docker compose up -d
-```
-
-Access Prometheus UI: `http://localhost:9090`
-
-### Starting with Grafana (optional)
-
-To include Grafana dashboards, use the `monitoring` profile:
-
-```bash
-docker compose --profile monitoring up -d
-```
-
-Access:
-- Prometheus: `http://localhost:9090`
-- Grafana: `http://localhost:3000` (login: `admin` / `admin`)
-
-### Verifying Prometheus Targets
-
-1. Open Prometheus UI: `http://localhost:9090`
-2. Go to **Status → Targets**
-3. Verify `protocol-gateway` target shows **UP**
-
-### Querying Metrics
-
-In the Prometheus UI, try these example queries:
-
-```promql
-# Total MQTT messages published
-gateway_mqtt_messages_published_total
-
-# Data points read (increasing counter)
-gateway_polling_points_read_total
-
-# Active connections by protocol
-gateway_connections_active
-
-# Poll success rate over last 5 minutes
-rate(gateway_polling_polls_total{status="success"}[5m])
 
 # Poll duration 95th percentile
 histogram_quantile(0.95, rate(gateway_polling_duration_seconds_bucket[5m]))
-
-# MQTT publish latency
-gateway_mqtt_publish_latency_seconds
 ```
 
-### Prometheus Configuration
+</details>
 
-The Prometheus configuration is in `config/prometheus.yml`. It scrapes:
-- **Gateway metrics** from `gateway:8080/metrics` every 15s
-- **EMQX metrics** from `emqx:18083` (if enabled)
+### Verifying Prometheus targets
 
-To modify scrape intervals or add alerting rules, edit this file and restart Prometheus.
+1. Open http://localhost:9090
+2. Go to **Status** > **Targets**
+3. Verify `protocol-gateway` target shows **UP**
 
-### Available Metrics Summary
+Prometheus config is in `config/prometheus.yml`. It scrapes the gateway every 15s.
 
-| Category | Metrics |
-|----------|---------|
-| **Connections** | `gateway_connections_active`, `gateway_connections_attempts_total`, `gateway_connections_errors_total`, `gateway_connections_latency_seconds` |
-| **Polling** | `gateway_polling_polls_total`, `gateway_polling_polls_skipped_total`, `gateway_polling_duration_seconds`, `gateway_polling_points_read_total`, `gateway_polling_points_published_total` |
-| **MQTT** | `gateway_mqtt_messages_published_total`, `gateway_mqtt_messages_failed_total`, `gateway_mqtt_buffer_size`, `gateway_mqtt_publish_latency_seconds`, `gateway_mqtt_reconnects_total` |
-| **Devices** | `gateway_devices_registered`, `gateway_devices_online`, `gateway_device_errors_total` |
+---
 
-## Notes / Troubleshooting
+## Docker Compose Stack
 
-- If you restart the stack and previously created devices don’t show up, ensure the gateway is using the same mounted `config/devices.yaml` (Compose does this by default).
-- If you previously published with missing `topic_suffix`, your MQTT client may still show old “stale” topics; reconnect the client to clear them.
+| Service | Image | Ports | Purpose |
+|---------|-------|-------|---------|
+| `emqx` | `emqx/emqx:5.5` | 1883, 8083, 8883, 18083 | MQTT broker |
+| `opcua-simulator` | Local build | 4840 | OPC UA test server |
+| `gateway` | Local build | 8080 | Protocol Gateway |
+| `prometheus` | `prom/prometheus:v2.50.1` | 9090 | Metrics collection |
+| `grafana` | `grafana/grafana:10.3.3` | 3000 | Metrics visualization |
 
+All services run on a shared `protocol-gateway-net` bridge network. Named volumes persist data across restarts.
+
+---
+
+## Project Structure
+
+```
+Connector_Gateway/
+├── cmd/gateway/main.go              # Entry point
+├── internal/
+│   ├── domain/                      # Core types: Device, Tag, DataPoint, Protocol
+│   ├── adapter/
+│   │   ├── modbus/                  # Modbus TCP/RTU + batch optimization
+│   │   ├── opcua/                   # OPC UA + session sharing + load shaping
+│   │   ├── s7/                      # Siemens S7 (ISO-on-TCP)
+│   │   └── mqtt/                    # MQTT publisher with buffering
+│   ├── service/
+│   │   ├── polling.go               # Polling engine (worker pool)
+│   │   └── command_handler.go       # MQTT -> device write commands
+│   ├── api/                         # REST API + Web UI handlers
+│   ├── health/                      # Health checks with flapping protection
+│   └── metrics/                     # Prometheus metrics registry
+├── config/
+│   ├── config.yaml                  # Gateway configuration
+│   ├── devices.yaml                 # Device & tag definitions
+│   └── prometheus.yml               # Prometheus scrape config
+├── web/index.html                   # Single-page Web UI
+├── tools/opcua-simulator/           # Python OPC UA simulator
+├── docs/                            # Architecture & detailed documentation
+├── testing/                         # Unit, integration, benchmark, fuzz tests
+├── Dockerfile                       # Multi-stage: golang:1.22 -> alpine:3.19
+├── docker-compose.yaml              # Dev stack
+└── docker-compose.test.yaml         # Test simulators stack
+```
+
+---
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Architecture Overview](docs/INDEX.md) | High-level architecture, tech stack, data flows |
+| [Gateway Service](docs/gateway-service.md) | Polling engine, command handler, REST API, health checks |
+| [Protocol Adapters](docs/protocol-adapters.md) | Modbus, OPC UA, S7, MQTT adapter internals |
+| [Docker & Infrastructure](docs/docker-infrastructure.md) | Container architecture, Prometheus, Grafana, simulators |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Complete technical reference (~3500 lines) |
+
+---
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| Devices don't persist after restart | Ensure `config/devices.yaml` is bind-mounted (default in Compose) |
+| Stale MQTT topics showing | Reconnect your MQTT client to clear retained messages |
+| `#` wildcard subscription denied | Use specific prefix like `plant1/#` instead |
+| Gateway exits on startup | EMQX must be healthy first. Check `docker compose logs emqx` |
+| OPC UA connection fails | Verify endpoint URL uses Docker hostname (`opcua-simulator`, not `localhost`) |

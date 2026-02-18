@@ -1,427 +1,266 @@
-# TODO - Connector Gateway
+# TODO — Connector Gateway Roadmap
 
-This document tracks bugs, improvements, and feature work for the Protocol Gateway.  
-Items are organized by **Phase** (priority) and **Component**.
+Last verified against codebase: **2026-02-18**
 
----
-
-## Phase 0: Critical (Security & Crash Prevention)
-
-> **Must fix before any production deployment.**
-
-| # | Component | Issue | File | Status |
-|---|-----------|-------|------|--------|
-| 1 | API | Missing authentication on endpoints | `internal/api/handlers.go` | ✅ |
-| 2 | Config | Credentials saved with 0644 permissions | `internal/adapter/config/devices.go` | ✅ |
-| 3 | OPC UA | Division by zero in `reverseScaling` | `internal/adapter/opcua/conversion.go` | ✅ |
-| 4 | S7 | Map delete during iteration in `Close()` | `internal/adapter/s7/pool.go` | ✅ |
-| 5 | API | No request body size limit (DoS) | `internal/api/handlers.go` | ✅ |
+Items are organized by priority. Each item notes what exists today vs what's missing.
 
 ---
 
-## Phase 1: High Priority (Data Integrity & Stability)
+## Critical — Wire In Existing Code
 
-> **Race conditions, goroutine leaks, and silent data corruption.**
+These features are **already implemented** but never connected to the main application.
 
-| # | Component | Issue | File | Status |
-|---|-----------|-------|------|--------|
-| 1 | OPC UA | Race condition in `ReadTags`/`WriteTags` (missing `opMu`) | `internal/adapter/opcua/client.go` | ✅ |
-| 2 | OPC UA | Channel close panic in subscription cleanup | `internal/adapter/opcua/subscription.go` | ✅ |
-| 3 | OPC UA | Goroutine leak in `handleNotifications` | `internal/adapter/opcua/subscription.go` | ✅ |
-| 4 | OPC UA | `reconnect()` modifies state without lock | `internal/adapter/opcua/client.go` | ✅ |
-| 5 | OPC UA | Subscriptions not recovered after reconnect | `internal/adapter/opcua/subscription.go` | ⬜ |
-| 6 | Modbus | Goroutine leak in `Connect()` on cancellation | `internal/adapter/modbus/client.go` | ✅ |
-| 7 | Modbus | Race on `connected` flag vs client state | `internal/adapter/modbus/client.go` | ✅ |
-| 8 | Modbus | Index OOB in `reorderBytes()` for 2-byte data | `internal/adapter/modbus/conversion.go` | ✅ |
-| 9 | Modbus | Protocol limits not validated (125 regs max) | `internal/adapter/modbus/client.go` | ✅ |
-| 10 | S7 | Connection leak on context cancellation | `internal/adapter/s7/client.go` | ✅ |
-| 11 | S7 | Boolean write destroys adjacent bits | `internal/adapter/s7/client.go` | ✅ |
-| 12 | MQTT | Unbounded `topicStats` map growth | `internal/adapter/mqtt/publisher.go` | ✅ |
+### 1. Wire OPC UA Subscriptions into the Polling Path
 
----
+**Status**: `subscription.go` is **complete** (SubscriptionManager, monitored items, deadband filtering, notification handling, recovery state). But `main.go` never instantiates it and `polling.go` never uses it. All OPC UA devices currently use synchronous polling.
 
-## Phase 2: Medium Priority (Reliability & Hardening)
+**What exists** (`internal/adapter/opcua/subscription.go`):
+- Full SubscriptionManager with Start/Stop lifecycle
+- Subscribe/Unsubscribe per device
+- Deadband filtering (absolute, percent)
+- Notification channel for async data delivery
+- Per-tag last-value caching
+- Subscription recovery after reconnect (republish + monitored item rebind)
 
-> **Defensive improvements and edge-case handling.**
+**What exists but is dead code** (`internal/adapter/opcua/pool.go`):
+- `recoverSubscriptions()` — called after session reconnect, but subscriptions are never created so `subscriptionState` is always nil
 
-| # | Component | Issue | File | Status |
-|---|-----------|-------|------|--------|
-| 1 | API | Overly permissive CORS (CSRF risk) | `internal/api/handlers.go` | ⬜ |
-| 2 | API | Error messages leak internal paths | `internal/api/handlers.go` | ⬜ |
-| 3 | Config | `SetCallbacks` not thread-safe | `internal/api/handlers.go` | ⬜ |
-| 4 | OPC UA | Node cache unbounded growth | `internal/adapter/opcua/client.go` | ✅ |
-| 5 | OPC UA | No StatusChangeNotification handling | `internal/adapter/opcua/subscription.go` | ⬜ |
-| 6 | OPC UA | Stats counters may overflow (uint64 wrap) | `internal/adapter/opcua/client.go` | 🟡 |
-| 7 | Modbus | Background goroutines ignore `Close()` | `internal/adapter/modbus/client.go` | ✅ |
-| 8 | Modbus | Pool `Close()` has same map iteration bug | `internal/adapter/modbus/pool.go` | ✅ |
-| 9 | S7 | Health check holds lock too long | `internal/adapter/s7/pool.go` | ✅ |
-| 10 | MQTT | Buffer re-queue can infinite loop | `internal/adapter/mqtt/publisher.go` | ✅ |
-| 11 | MQTT | `drainBuffer` timeout too short | `internal/adapter/mqtt/publisher.go` | ✅ |
-| 12 | Domain | `sync.Pool` use-after-free risk | `internal/domain/datapoint.go` | 🟡 |
-
-**Notes:**
-- 🟡 #6: uint64 overflow takes ~584 years at 1M ops/sec - accepted risk with documentation
-- 🟡 #12: Documented with safety warnings; NewDataPoint() used by default for safety
-
----
-
-## Phase 3: Low Priority (Code Quality & Optimization)
-
-> **Non-urgent improvements for maintainability and performance.**
-
-| # | Component | Issue | Status |
-|---|-----------|-------|--------|
-| 1 | S7 | Regex compiled on every `parseSymbolicAddress` call | ⬜ |
-| 2 | All | Magic numbers for timeouts/jitter percentages | ⬜ |
-| 3 | All | Inconsistent error wrapping patterns | ⬜ |
-| 4 | Domain | Priority bounds (0-2) not enforced | ⬜ |
-| 5 | Domain | Quality/DataType enums not exhaustively validated | ⬜ |
-| 6 | OPC UA | Unused `getSecurityMode()` function (dead code) | ⬜ |
-| 7 | S7 | Batch reads not implemented (N tags = N round trips) | ✅ |
-
----
-
-## Architecture Improvements (Not Yet Implemented)
-
-### 1. Backpressure Propagation Across Layers
-**Priority**: High  
-**Complexity**: High  
-
-Currently backpressure is handled locally in each component:
-- Worker pool in polling service
-- Queue in command handler  
-- Circuit breaker in connection pool
-
-**What's needed**: Cross-layer signaling where:
-```
-Modbus breaker opens →
-  Polling slows for that device →
-    MQTT publishing rate drops →
-      Health endpoint degrades status →
-        Orchestrator reassigns workload
-```
-
-**Implementation ideas**:
-- Event bus for component coordination
-- Backpressure signals propagated via context
-- Adaptive rate limiting based on downstream health
-
----
-
-### 2. Separate Worker Pools Per Priority/QoS Tier
-**Priority**: High  
-**Complexity**: Medium  
-
-Currently all tags and commands are treated equally. Real platforms split:
-- **Control plane**: writes, alarms, safety (Priority 2)
-- **Data plane**: telemetry, metrics, logs (Priority 0-1)
+**What exists in domain** (`internal/domain/device.go:174-179`):
+- `OPCUseSubscriptions bool` field on ConnectionConfig — marked "Not yet implemented - planned for Phase 3"
+- `OPCPublishInterval` and `OPCSamplingInterval` fields already exist
 
 **What's needed**:
-- Separate goroutine pools per priority tier
-- Separate circuit breaker rules per tier
-- Separate MQTT QoS levels / topic prefixes
-- Ensures telemetry flood doesn't block emergency stop writes
+1. Instantiate `SubscriptionManager` in `main.go` (or inside `opcua.ConnectionPool`)
+2. In `polling.go`, check `device.Connection.OPCUseSubscriptions` — if true, delegate to SubscriptionManager instead of polling
+3. Wire SubscriptionManager's `DataHandler` callback to publish data points via MQTT publisher
+4. Ensure the subscription path populates DataPoints with the same fields as the polling path (quality, timestamps, latency)
+5. Handle mixed mode: some OPC UA devices poll, others subscribe
 
-**Foundation already in place**:
-- `Tag.Priority` field added
-- `DataPoint.Priority` field added
+**Impact**: For slow-changing values (temperature updated every 30s), subscriptions eliminate 29 wasted poll cycles per interval. Reduces OPC UA server load significantly.
 
 ---
 
-### 3. Shadow State (Desired vs Actual Configuration)
-**Priority**: Medium  
-**Complexity**: High  
+### 2. Test-Connection Handler is a Stub
 
-For fleet management and regulated environments:
-```
-Device A
- ├─ Config v17 (desired)
- ├─ Active v16 (running)
- └─ Pending v18 (failed validation)
-```
+**Status**: `internal/api/handlers.go:590` has `// TODO: Actually test the connection with the protocol pool`. Currently only validates config fields and returns success — it never opens a real connection.
 
 **What's needed**:
-- State machine for config transitions
-- Persistence layer for config history
-- Automatic rollback on failures
-- API for config diff / promotion
-
-**Foundation already in place**:
-- `Device.ConfigVersion` 
-- `Device.ActiveConfigVersion`
-- `Device.LastKnownGoodVersion`
+1. Accept protocol pool reference in the API handler (or via DeviceManager)
+2. Attempt a real connection to the device (connect → health check → disconnect)
+3. Return actual success/failure with error details (timeout, auth failure, unreachable, etc.)
+4. Add a timeout to prevent hanging on unresponsive devices
 
 ---
 
-### 4. Clock Drift / NTP Sync Awareness
-**Priority**: Low  
-**Complexity**: Medium  
+### 3. MQTT Publish Latency Not Measured
 
-Industrial systems care about:
-- Clock drift between PLC and gateway
-- NTP sync state
-- "Data freshness" windows
+**Status**: `internal/adapter/mqtt/publisher.go:385` passes `0` as latency: `p.metrics.RecordMQTTPublish(true, 0) // TODO: measure actual latency`
 
 **What's needed**:
-- NTP sync status in health endpoint
-- Clock drift estimation per device
-- Configurable staleness thresholds
-- Reject/flag data outside freshness window
+- Capture `time.Now()` before `token.Wait()`, calculate duration after
+- Pass real latency to `RecordMQTTPublish()`
+- The metrics registry already has a `MQTTPublishLatency` histogram — it's just never fed real data
 
 ---
 
-## Performance Optimizations (Deferred)
+## High — Significant Improvements
 
-### 5. `reorderBytes` Allocation Optimization
-**Priority**: Low  
-**Complexity**: Low  
+### 4. S7 ReadTags Address-Based Batch Optimization
 
-Currently allocates on every call (hot path):
-```go
-result := make([]byte, len(data))
-```
+**Status**: S7 `ReadTags()` uses simple fixed-size chunking (20 items per `AGReadMulti` call). Modbus has `buildContiguousRanges()` that merges nearby addresses into contiguous reads, reducing 100 tags to 1-5 reads.
 
-**Options**:
-- Reuse buffer via `sync.Pool`
-- Reorder in-place (carefully)
+**What exists** (`internal/adapter/s7/client.go`):
+- `ReadTags()` chunks tags into groups of `MaxMultiReadItems` (20)
+- `readTagBatch()` calls `AGReadMulti()` — multi-read capability is used
+- `MaxMultiReadItems = 20` in `types.go`
 
-**Note**: Only optimize after profiling shows this is a bottleneck.
+**What exists in benchmarks** (`testing/benchmark/latency/read_latency_test.go:642-654`):
+- Benchmark comments note: "S7 batch efficiency shown here assumes true multi-item PDU reads, which may not be implemented in the actual adapter (currently sequential)" and "Actual adapter may read sequentially, not batched"
+
+**What's missing** (compared to Modbus):
+- No sorting by S7 area (DB, M, I, Q) before batching
+- No contiguous address merging — 20 scattered tags = 20 items in PDU instead of reading contiguous blocks
+- No gap-filling optimization (reading a few extra bytes to merge two nearby ranges)
+
+**Implementation**: Port Modbus's `buildContiguousRanges()` logic:
+1. Group tags by S7 area + DB number
+2. Sort by byte offset within each group
+3. Merge contiguous/nearby ranges (configurable max gap)
+4. Read each merged range as a single buffer, then extract tag values by offset
+
+**Estimated impact**: 3-10x fewer round trips for typical 50-100 tag reads, depending on address distribution.
 
 ---
 
-### 6. Coil/Discrete Input Batching
-**Priority**: Medium  
-**Complexity**: Medium  
+### 5. Device Edit Resets Polling State
 
-Range-based batching implemented for holding/input registers but coils still read individually.
+**Status**: When a device is updated via the API, `main.go` calls `pollingSvc.UnregisterDevice()` then `pollingSvc.RegisterDevice()`. This resets poll jitter, retry state, circuit breaker state, and cancels any in-progress operations.
 
 **What's needed**:
-- Bit-packed batching for coils (8 coils per byte)
-- Similar contiguous range algorithm
+- Implement `PollingService.ReplaceDevice()` that atomically swaps the device config while preserving the poller's runtime state (next poll time, backoff state, etc.)
+- Only re-create the protocol client if connection parameters actually changed
+- If only tags changed, update tags without dropping the connection
 
 ---
 
-## Completed ✓
+### 6. Separate Worker Pools Per Priority/QoS Tier
 
-### Phase 0 (Feb 2026)
-- [x] API authentication middleware with configurable API key
-- [x] Request body size limiting (default 1MB)
-- [x] CORS middleware with configurable allowed origins
-- [x] File permissions fixed to 0600 for credential files
-- [x] Division by zero guard in `reverseScaling`
-- [x] Map iteration bug fixed in S7 pool `Close()`
+**Status**: Foundation exists but is not wired in.
 
-### Phase 1 (Feb 2026)
-- [x] OPC UA `reconnect()` now uses TryLock to prevent race conditions
-- [x] Modbus `Connect()` goroutine leak fixed - handler closed on context cancel
-- [x] Modbus `reorderBytes()` OOB fixed - handles empty/single byte data
-- [x] Modbus protocol limits validated (125 registers, 2000 coils max)
-- [x] S7 `Connect()` goroutine leak fixed - same pattern as Modbus
-- [x] S7 boolean write now uses read-modify-write to preserve adjacent bits
-- [x] MQTT `topicStats` map bounded to 10k entries with LRU eviction
+**What exists**:
+- `Tag.Priority` field (domain/tag.go:112-117) — 0=telemetry, 1=control, 2=safety
+- `DataPoint.Priority` field (domain/datapoint.go:81-82) + `WithPriority()` chainable method
+- OPC UA load shaping already has priority queues (Safety > Control > Telemetry) with brownout mode
 
-### Previously Completed
-- [x] Per-device circuit breakers (fault isolation) - Modbus & OPC UA
-- [x] Tag/DataPoint alignment fix (tagByID map)
-- [x] Split read/publish contexts
-- [x] `sync.Once` for safe channel closing
-- [x] O(1) tag lookup in command handler
-- [x] Modbus operation serialization (thread safety)
-- [x] OPC UA operation serialization (opMu)
-- [x] `isConnectionError` expanded (io.EOF, etc.) - Modbus & OPC UA
-- [x] Backoff jitter (prevent thundering herd) - Modbus & OPC UA
-- [x] Range-based register batching (N reads → 1-5 reads) - Modbus
-- [x] Enhanced time semantics (GatewayTimestamp, PublishTimestamp, LatencyMs)
-- [x] QoS Priority field on Tag and DataPoint
-- [x] Device config versioning fields
-- [x] OPC UA session state machine
-- [x] OPC UA server limits awareness (MaxNodesPerRead batching)
-- [x] OPC UA subscription infrastructure (foundation)
+**What's missing**:
+- Polling service treats all tags equally — no priority-based scheduling
+- No separate goroutine pools per tier
+- No separate MQTT QoS levels per priority
+- No guarantee that a telemetry flood won't block safety writes
 
 ---
 
-## S7 Specific (Not Yet Implemented)
+### 7. Modbus Coil/Discrete Input Batching
 
-### 13. Tag Write Aggregation (Batch Writes)
-**Priority**: Medium  
-**Complexity**: Medium  
+**Status**: Range-based batching (`buildContiguousRanges`) works for holding/input registers. Coils and discrete inputs fall through to `readTagGroupIndividually()` which reads them one by one (`client.go:426-429`).
 
-`WriteTags` currently loops per tag — consider batching writes when possible:
-- S7 supports multi-variable writes to same DB area
-- gos7 `AGWriteMulti` can combine multiple writes into single request
-- Reduces round trips significantly for bulk writes
-
-**Implementation**:
-```go
-// Group writes by DB number, then use AGWriteMulti
-func (c *Client) WriteTags(ctx context.Context, writes []TagWrite) []error {
-    groups := c.groupWritesByDB(writes)
-    for db, dbWrites := range groups {
-        // Build PDU with multiple items
-        client.AGWriteMulti(items...)
-    }
-}
-```
+**What's needed**:
+- Bit-packed contiguous range batching for coils (8 coils per byte in Modbus response)
+- Similar `buildContiguousRanges()` algorithm adapted for bit addressing
+- Extract individual coil values from the packed byte response
 
 ---
 
-### 14. Connection TTL vs. Idle Timeout
-**Priority**: Medium  
-**Complexity**: Low  
+## Medium — Feature Gaps
 
-Add a max connection TTL (hard cap) in addition to `IdleTimeout`:
-- Prevents long-lived, stale sessions from living forever
-- Forces periodic reconnection even for active connections
+### 8. OPC UA Browse & Model Awareness
+
+**Status**: `BrowseResult` struct exists in `opcua/types.go:198-204` but no `Browse()` function is implemented. OPC UA is treated as a flat node reader — users must manually enter NodeIDs.
+
+**What's needed**:
+- `Browse(ctx, nodeID)` function to walk the address space tree
+- `GetNodeAttributes(ctx, nodeID)` to read DataType, AccessLevel, EngineeringUnits
+- Wire into Web UI for tag auto-discovery (instead of manual NodeID entry)
+- Cache results to avoid re-browsing on every connection
+
+---
+
+### 9. S7 Write Aggregation (Batch Writes)
+
+**Status**: `WriteTags()` in `s7/pool.go:306` loops per tag. gos7 supports `AGWriteMulti` for batched writes.
+
+**What's needed**:
+- Group writes by DB number
+- Build multi-item PDU with `AGWriteMulti`
+- Reduces round trips for bulk write scenarios
+
+---
+
+### 10. Connection TTL (Hard Cap)
+
+**Status**: All pools have `IdleTimeout` (close if unused). None have a max connection lifetime.
+
+**What's needed**:
+- `MaxTTL` config for each pool — force periodic reconnection even for active connections
 - Helps with PLC firmware that leaks resources over long sessions
-
-**Config addition**:
-```go
-type PoolConfig struct {
-    IdleTimeout   time.Duration // Current: close if unused
-    MaxTTL        time.Duration // New: hard cap on connection lifetime
-}
-```
+- S7 PLCs are especially prone to this
 
 ---
 
-### 15. Per-Device/Tag Metrics Exposure
-**Priority**: Low  
-**Complexity**: Medium  
+### 11. OPC UA Type System Fidelity
 
-Currently only connection-level metrics are exposed. Add:
-- Gauge vector for per-device connection state
-- Counter vector for per-tag error rate
-- Histogram for per-device read/write latency
+**Status**: Currently flattens all OPC UA values via `v.Value()` to basic Go types. Loses array types, LocalizedText, ExtensionObjects, Enums, structured types.
 
-**Example metrics**:
-```
-s7_device_connected{device_id="plc1"} 1
-s7_tag_errors_total{device_id="plc1", tag_id="temp"} 42
-s7_read_duration_seconds{device_id="plc1"} histogram
-```
+**What's needed**:
+- Type-aware variant conversion
+- Configurable "preserve types" mode for downstream consumers that can handle rich types
 
 ---
 
-### 16. Security Documentation & Validation
-**Priority**: Low  
-**Complexity**: Low  
+### 12. OPC UA Certificate Trust Store Management
 
-S7 protocol doesn't have native authentication (unlike OPC UA), but:
-- Document auth-less access risks for real deployments
-- Add config validation warnings for production mode
-- Consider S7comm+ password support (S7-1500)
+**Status**: `security.go` loads certificates and validates them. But there's no trust list management, rejected certs folder, auto-accept for dev mode, or expiry monitoring.
+
+**What's needed for production deployments**:
+- Trust/reject list management
+- Certificate expiry monitoring with alerting
+- Auto-accept mode for development (with warnings)
+- GDS (Global Discovery Server) integration for large deployments
+
+---
+
+### 13. Per-Device Circuit Breaker Configuration
+
+**Status**: All devices within a protocol use the same circuit breaker config. Some PLCs need different thresholds.
+
+**What's needed**:
+- Optional `CircuitBreakerConfig` on `Device` — override the pool default
+- Fast-fail for critical devices, lenient for legacy PLCs with flaky connectivity
+
+---
+
+## Low — Nice to Have
+
+### 14. DataPoint Pool Usage in Production
+
+**Status**: `AcquireDataPoint()`/`ReleaseDataPoint()` exist with a `sync.Pool` in `domain/datapoint.go`. Only used in tests and benchmarks (`testing/unit/domain/datapoint_test.go`, `testing/benchmark/throughput/datapoint_test.go`, `testing/benchmark/concurrency/stress_test.go`). All production code uses `NewDataPoint()`.
+
+**Note**: The polling service already uses a **slice pool** for `[]*DataPoint` (`polling.go:45-51`), and S7 uses a **buffer pool** for byte buffers (`s7/types.go:122-175`). Both are actively used in production. The element-level DataPoint pool is deliberately avoided for safety — only promote it after profiling shows GC pressure at high device counts.
+
+---
+
+### 15. `reorderBytes` Allocation Optimization
+
+**Status**: Allocates `make([]byte, len(data))` on every call in the hot path. Could reuse buffers via `sync.Pool` or reorder in-place.
+
+**Note**: Only optimize after profiling confirms this is a bottleneck.
+
+---
+
+### 16. OPC UA Event & Alarm Support
+
+**Status**: Not implemented. Full OPC UA Alarms & Conditions (A&C) is a large subsystem:
+- Event subscriptions (not just data changes)
+- Alarm acknowledgment flow
+- Historical Data Access (HDA)
+
+Consider as a separate project phase.
+
+---
+
+### 17. Clock Drift / NTP Sync Awareness
+
+**Status**: Not implemented. DataPoint already tracks `DeviceTimestamp`, `GatewayTimestamp`, and `StalenessMs` — but there's no NTP sync check, clock drift estimation, or freshness window enforcement.
+
+---
+
+### 18. S7 Per-Device/Tag Prometheus Metrics
+
+**Status**: Modbus adapter has per-tag diagnostics (`TagDiagnostic` with success/error counts). S7 has the same structures but they're not exposed as Prometheus metrics.
+
+**What's needed**:
+- Gauge vector: `s7_device_connected{device_id}`
+- Counter vector: `s7_tag_errors_total{device_id, tag_id}`
+- Histogram: `s7_read_duration_seconds{device_id}`
+
+---
+
+### 19. S7 Security Documentation
+
+**Status**: S7 protocol has no native authentication (unlike OPC UA). Production deployments need:
+- Risk documentation for auth-less access
+- Config validation warnings in production mode
+- S7comm+ password support for S7-1500 PLCs
 - Network segmentation recommendations
 
 ---
 
-### 17. Per-Device Circuit Breaker Configuration
-**Priority**: Low  
-**Complexity**: Low  
+## Not an Issue — Investigated and Closed
 
-Currently all devices use the same default circuit breaker config. Enable per-device control:
-- Some PLCs may need more aggressive failure thresholds
-- Legacy PLCs may need longer recovery timeouts
-- Fast-fail for critical devices, lenient for non-critical
+### Modbus Thread Safety (opMu Mutex)
 
-**Config addition**:
-```go
-type Device struct {
-    Connection ConnectionConfig
-    CircuitBreaker *CircuitBreakerConfig // Optional per-device override
-}
-```
+**Investigation**: The `opMu sync.Mutex` in `modbus/client.go` serializes all Modbus operations because `goburrow/modbus` is not thread-safe.
 
----
+**Finding**: **Not a bottleneck.** Each device gets its own client with its own `opMu`. The polling architecture uses one goroutine per device, so there's no contention — the mutex only fires if a health check or API write happens concurrently with a poll, which is rare and brief. The batch optimization (`buildContiguousRanges`) already minimizes the number of lock acquisitions per poll cycle.
 
-## OPC UA Specific (Not Yet Implemented)
-
-### 7. Full Subscription Implementation
-**Priority**: Critical  
-**Complexity**: High  
-
-Foundation is in place, but full implementation needed:
-- `gopcua` subscription API integration
-- Monitored item lifecycle (create, modify, delete)
-- Automatic resubscribe on reconnect
-- Notification queue management
-- Backpressure handling for notification storms
-- QoS mapping to MQTT
-
-**Files**: `internal/adapter/opcua/subscription.go` (to create)
-
----
-
-### 8. Browse & Model Awareness
-**Priority**: High  
-**Complexity**: Medium  
-
-Currently treats OPC UA as flat node reader. Real gateways:
-- Browse address space
-- Build tag tree dynamically
-- Cache NodeClass, DataType, AccessLevel, EngineeringUnits
-- Auto-generate tags from server models
-
-**Implementation**:
-```go
-func (c *Client) Browse(ctx context.Context, nodeID string) ([]*BrowseResult, error)
-func (c *Client) GetNodeAttributes(ctx context.Context, nodeID string) (*NodeAttributes, error)
-```
-
----
-
-### 9. Type System Fidelity
-**Priority**: Medium  
-**Complexity**: Medium  
-
-Currently flattens all values via `v.Value()`. Real systems preserve:
-- Array types
-- LocalizedText
-- ExtensionObjects
-- Enums with names
-- Structured types
-
-**What's needed**:
-- Type-aware variant conversion
-- Configurable "preserve types" mode
-
----
-
-### 10. Certificate Trust Store Management
-**Priority**: Medium  
-**Complexity**: High  
-
-Currently loads certs but doesn't manage:
-- Trust lists
-- Rejected certs folder
-- Auto-accept (development mode)
-- Certificate rotation
-- Expiry monitoring
-
-**Required for**: Plant floor deployments, regulated environments
-
----
-
-### 11. Event & Alarm Support
-**Priority**: Medium  
-**Complexity**: Very High  
-
-Real OPC UA includes:
-- Alarms & Conditions (A&C)
-- Events (not just data changes)
-- Acknowledgment flow
-- Historical access (HDA)
-
-This is a separate subsystem - consider as Phase 2.
-
----
-
-### 12. Latency Control (Fast/Slow Lanes)
-**Priority**: Low  
-**Complexity**: Medium  
-
-Support differentiated service levels:
-- Priority nodes with faster sampling
-- Separate subscriptions per QoS tier
-- Publishing interval tuning per tag group
-
-**Foundation in place**: `Tag.Priority` field
+**Verdict**: Defensive code, correctly applied. No action needed.

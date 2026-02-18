@@ -154,24 +154,9 @@ services:
       - prometheus
     networks:
       - protocol-gateway-net
-    profiles:
-      - monitoring
+    # profiles:
+    #   - monitoring
     restart: unless-stopped
-
-  # ========================================
-  # MQTT Explorer (Optional - for debugging)
-  # ========================================
-  mqtt-explorer:
-    image: smeagolworms4/mqtt-explorer:latest
-    container_name: mqtt-explorer
-    depends_on:
-      - emqx
-    ports:
-      - "4000:4000"
-    networks:
-      - protocol-gateway-net
-    profiles:
-      - debug
 
 # ========================================
 # Networks
