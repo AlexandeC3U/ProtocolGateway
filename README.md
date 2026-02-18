@@ -262,7 +262,7 @@ Connector_Gateway/
 | [Gateway Service](docs/gateway-service.md) | Polling engine, command handler, REST API, health checks |
 | [Protocol Adapters](docs/protocol-adapters.md) | Modbus, OPC UA, S7, MQTT adapter internals |
 | [Docker & Infrastructure](docs/docker-infrastructure.md) | Container architecture, Prometheus, Grafana, simulators |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Complete technical reference (~3500 lines) |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Complete technical reference (~3500 lines) |
 
 ---
 

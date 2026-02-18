@@ -78,6 +78,7 @@ graph TD
 | [Gateway Service](./gateway-service.md) | Core service: polling engine, command handler, REST API, Web UI, device management, configuration |
 | [Protocol Adapters](./protocol-adapters.md) | Modbus TCP/RTU, OPC UA, Siemens S7 adapters, MQTT publisher — connection pools, circuit breakers, data conversion |
 | [Docker & Infrastructure](./docker-infrastructure.md) | Docker Compose stack, container architecture, Prometheus, Grafana, OPC UA simulator |
+| [Architecture](./ARCHITECTURE.md) | Complete and detailed architecture of the entire project |
 
 ## Tech Stack
 
