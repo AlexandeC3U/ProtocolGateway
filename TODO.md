@@ -1,6 +1,6 @@
 # TODO — Connector Gateway Roadmap
 
-Last verified against codebase: **2026-02-18**
+Last verified against codebase: **2026-02-19**
 
 Items are organized by priority. Each item notes what exists today vs what's missing.
 
@@ -40,26 +40,15 @@ These features are **already implemented** but never connected to the main appli
 
 ---
 
-### 2. Test-Connection Handler is a Stub
+### ~~2. Test-Connection Handler is a Stub~~ ✅ DONE
 
-**Status**: `internal/api/handlers.go:590` has `// TODO: Actually test the connection with the protocol pool`. Currently only validates config fields and returns success — it never opens a real connection.
-
-**What's needed**:
-1. Accept protocol pool reference in the API handler (or via DeviceManager)
-2. Attempt a real connection to the device (connect → health check → disconnect)
-3. Return actual success/failure with error details (timeout, auth failure, unreachable, etc.)
-4. Add a timeout to prevent hanging on unresponsive devices
+**Resolved**: Added `ConnectionTester` interface to `APIHandler` with `SetConnectionTester()` setter. `TestConnectionHandler` now performs a real `ReadTag` against the device's first tag using the protocol pool, with a configurable timeout (falls back to 10s). Returns elapsed time, protocol, and error details on failure (HTTP 503). Gracefully degrades to validation-only when no tester is wired in.
 
 ---
 
-### 3. MQTT Publish Latency Not Measured
+### ~~3. MQTT Publish Latency Not Measured~~ ✅ DONE
 
-**Status**: `internal/adapter/mqtt/publisher.go:385` passes `0` as latency: `p.metrics.RecordMQTTPublish(true, 0) // TODO: measure actual latency`
-
-**What's needed**:
-- Capture `time.Now()` before `token.Wait()`, calculate duration after
-- Pass real latency to `RecordMQTTPublish()`
-- The metrics registry already has a `MQTTPublishLatency` histogram — it's just never fed real data
+**Resolved**: Added `publishStart := time.Now()` before `token.WaitTimeout()`. All three exit paths (success, timeout, context cancellation) now pass `time.Since(publishStart).Seconds()` to `RecordMQTTPublish()`. The existing `MQTTPublishLatency` histogram now receives real data.
 
 ---
 
@@ -156,14 +145,9 @@ These features are **already implemented** but never connected to the main appli
 
 ---
 
-### 10. Connection TTL (Hard Cap)
+### ~~10. Connection TTL (Hard Cap)~~ ✅ DONE
 
-**Status**: All pools have `IdleTimeout` (close if unused). None have a max connection lifetime.
-
-**What's needed**:
-- `MaxTTL` config for each pool — force periodic reconnection even for active connections
-- Helps with PLC firmware that leaks resources over long sessions
-- S7 PLCs are especially prone to this
+**Resolved**: Added `MaxTTL time.Duration` config to all three pool implementations (Modbus `PoolConfig`, S7 `PoolConfig`, OPC UA `PoolConfig`). Added `createdAt time.Time` tracking on client/session creation. Updated idle reapers in all pools to check both idle timeout AND MaxTTL expiry, closing connections that exceed either threshold. Modbus and S7 reap in their `reapIdleConnections()` loops; OPC UA reaps in `reapIdleSessions()` with a two-pass approach (identify then close under write lock).
 
 ---
 
@@ -189,13 +173,9 @@ These features are **already implemented** but never connected to the main appli
 
 ---
 
-### 13. Per-Device Circuit Breaker Configuration
+### ~~13. Per-Device Circuit Breaker Configuration~~ ✅ DONE
 
-**Status**: All devices within a protocol use the same circuit breaker config. Some PLCs need different thresholds.
-
-**What's needed**:
-- Optional `CircuitBreakerConfig` on `Device` — override the pool default
-- Fast-fail for critical devices, lenient for legacy PLCs with flaky connectivity
+**Resolved**: Added `CircuitBreakerConfig` struct to `domain` package with fields: `MaxRequests`, `Interval`, `Timeout`, `FailureThreshold`, `FailureRatio`. Added optional `CircuitBreaker *CircuitBreakerConfig` field to `ConnectionConfig`. Updated all three pool implementations (Modbus, S7, OPC UA device-level breaker) to apply per-device overrides when present, falling back to pool defaults for any zero-value field.
 
 ---
 
@@ -209,11 +189,9 @@ These features are **already implemented** but never connected to the main appli
 
 ---
 
-### 15. `reorderBytes` Allocation Optimization
+### ~~15. `reorderBytes` Allocation Optimization~~ ✅ DONE
 
-**Status**: Allocates `make([]byte, len(data))` on every call in the hot path. Could reuse buffers via `sync.Pool` or reorder in-place.
-
-**Note**: Only optimize after profiling confirms this is a bottleneck.
+**Resolved**: Rewrote `reorderBytes()` in `internal/adapter/modbus/conversion.go` to work entirely in-place with zero allocations. BigEndian is a no-op; LittleEndian does a full byte reverse; MidBigEndian swaps adjacent bytes; MidLitEndian swaps 2-byte halves of each 4-byte group. Eliminated the `make([]byte, len(data))` allocation from the hot path.
 
 ---
 

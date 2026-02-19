@@ -52,12 +52,13 @@ testing/
 ├── fuzz/                      # Fuzz testing
 │   ├── conversion/            # ✅ modbus_conversion_fuzz_test.go, scaling_fuzz_test.go, opcua_variant_fuzz_test.go, s7_type_fuzz_test.go
 │   ├── parsing/               # ✅ config_fuzz_test.go, address_fuzz_test.go, nodeid_fuzz_test.go
-│   └── protocol/              # ✅ modbus_frame_fuzz_test.go
+│   └── protocol/              # ✅ modbus_frame_fuzz_test.go, s7_packet_fuzz_test.go
 
 ├── e2e/                       # End-to-end
 │   ├── startup_shutdown_test.go  # ✅
 │   ├── config_reload_test.go     # ✅
 │   ├── multi_device_test.go      # ✅
+│   ├── failover_test.go          # ✅
 │   └── scenarios/             # 📋 Planned
 │
 ├── mocks/                     # Shared mock implementations ✅
@@ -179,9 +180,9 @@ Discover edge cases and crashes with random inputs.
 | **Parsing** | `address_fuzz_test.go` | Address string parsing | ✅ |
 | **Parsing** | `nodeid_fuzz_test.go` | OPC UA NodeID parsing | ✅ |
 | **Protocol** | `modbus_frame_fuzz_test.go` | Malformed Modbus frames, MBAP parsing | ✅ |
-| **Protocol** | `s7_packet_fuzz_test.go` | Malformed S7 packets | 📋 |
+| **Protocol** | `s7_packet_fuzz_test.go` | Malformed S7 packets, TPKT/COTP/S7 header parsing | ✅ |
 
-**Summary:** 8/9 implemented (89%)
+**Summary:** 9/9 implemented (100%)
 
 ### 5. End-to-End Tests (`testing/e2e/`)
 
@@ -192,11 +193,11 @@ Complete workflow scenarios.
 | `startup_shutdown_test.go` | Clean startup/shutdown cycle | ✅ |
 | `config_reload_test.go` | Hot config reload | ✅ |
 | `multi_device_test.go` | Multiple devices, mixed protocols | ✅ |
-| `failover_test.go` | Device failure and recovery | 📋 |
+| `failover_test.go` | Device failure, circuit breaker, cascading recovery, graceful degradation | ✅ |
 | `high_load_test.go` | Sustained high message rate | ✅ |
 | `memory_leak_test.go` | Long-running memory stability | ✅ |
 
-**Summary:** 5/6 implemented (83%)
+**Summary:** 6/6 implemented (100%)
 
 ---
 
@@ -288,9 +289,9 @@ docker-compose -f docker-compose.test.yaml down
 | Unit Tests | 28 | 28 | 100% |
 | Integration Tests | 12 | 20 | 60% |
 | Benchmark Tests | 10 | 12 | 83% |
-| Fuzz Tests | 8 | 9 | 89% |
-| E2E Tests | 5 | 6 | 83% |
-| **Total** | **63** | **75** | **84%** |
+| Fuzz Tests | 9 | 9 | 100% |
+| E2E Tests | 6 | 6 | 100% |
+| **Total** | **65** | **75** | **87%** |
 
 ### Implemented Tests ✅
 
@@ -343,6 +344,8 @@ docker-compose -f docker-compose.test.yaml down
 | `testing/e2e/` | `multi_device_test.go` | Multi-device, mixed protocol tests |
 | `testing/e2e/` | `high_load_test.go` | Sustained throughput, burst recovery, backpressure, latency under load |
 | `testing/e2e/` | `memory_leak_test.go` | Heap stability, goroutine stability, device churn, GC effectiveness |
+| `testing/e2e/` | `failover_test.go` | Device failure, circuit breaker, cascading recovery, graceful degradation, multi-protocol resilience |
+| `testing/fuzz/protocol/` | `s7_packet_fuzz_test.go` | TPKT/COTP/S7 header parsing, read request validation, frame round-trip |
 | `internal/domain/` | `datapoint_bench_test.go` | Original benchmarks |
 
 ### Support Files ✅
@@ -364,7 +367,7 @@ docker-compose -f docker-compose.test.yaml down
 | `testing/unit/adapters/s7/` | `conversion_test.go` | S7 type conversion |
 | `testing/integration/s7/` | `connection_test.go` | S7 connection tests |
 | `testing/fuzz/conversion/` | `s7_type_fuzz_test.go` | S7 type fuzzing |
-| `testing/e2e/` | `failover_test.go` | Device failure scenarios |
+| ~~`testing/e2e/`~~ | ~~`failover_test.go`~~ | ~~Device failure scenarios~~ ✅ |
 | `testing/e2e/` | `high_load_test.go` | Sustained load testing |
 | `testing/benchmark/` | `mqtt_publish_throughput_test.go` | MQTT throughput benchmarks |
 

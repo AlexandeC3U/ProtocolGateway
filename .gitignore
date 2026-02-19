@@ -87,3 +87,7 @@ certs/**/*.pfx
 !certs/README.md
 !certs/**/.gitkeep
 !certs/generate-certs.sh
+
+# Github and Claude specific files
+.github/
+claude/

@@ -30,6 +30,7 @@ type pooledClient struct {
 	client    *Client
 	device    *domain.Device
 	breaker   *gobreaker.CircuitBreaker // Per-device circuit breaker for isolation
+	createdAt time.Time                 // Connection creation time for MaxTTL enforcement
 	inUse     bool
 	lastError error
 	mu        sync.Mutex
@@ -71,15 +72,42 @@ func NewConnectionPool(config PoolConfig, logger zerolog.Logger, metricsReg *met
 
 // createCircuitBreaker creates a per-device circuit breaker.
 // Per-device breakers ensure one failing device doesn't affect others.
-func (p *ConnectionPool) createCircuitBreaker(deviceID string) *gobreaker.CircuitBreaker {
+// If the device has a CircuitBreakerConfig override, those values take precedence.
+func (p *ConnectionPool) createCircuitBreaker(device *domain.Device) *gobreaker.CircuitBreaker {
+	// Pool defaults
+	maxRequests := uint32(3)
+	interval := 10 * time.Second
+	timeout := 30 * time.Second
+	failureThreshold := uint32(10)
+	failureRatio := 0.6
+
+	// Apply per-device overrides
+	if cb := device.Connection.CircuitBreaker; cb != nil {
+		if cb.MaxRequests > 0 {
+			maxRequests = cb.MaxRequests
+		}
+		if cb.Interval > 0 {
+			interval = cb.Interval
+		}
+		if cb.Timeout > 0 {
+			timeout = cb.Timeout
+		}
+		if cb.FailureThreshold > 0 {
+			failureThreshold = cb.FailureThreshold
+		}
+		if cb.FailureRatio > 0 {
+			failureRatio = cb.FailureRatio
+		}
+	}
+
 	return gobreaker.NewCircuitBreaker(gobreaker.Settings{
-		Name:        fmt.Sprintf("modbus-%s", deviceID),
-		MaxRequests: 3,
-		Interval:    10 * time.Second,
-		Timeout:     30 * time.Second,
+		Name:        fmt.Sprintf("modbus-%s", device.ID),
+		MaxRequests: maxRequests,
+		Interval:    interval,
+		Timeout:     timeout,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			failureRatio := float64(counts.TotalFailures) / float64(counts.Requests)
-			return counts.Requests >= 10 && failureRatio >= 0.6
+			ratio := float64(counts.TotalFailures) / float64(counts.Requests)
+			return counts.Requests >= failureThreshold && ratio >= failureRatio
 		},
 		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
 			p.logger.Info().
@@ -134,9 +162,10 @@ func (p *ConnectionPool) GetClient(ctx context.Context, device *domain.Device) (
 	}
 
 	p.clients[device.ID] = &pooledClient{
-		client:  client,
-		device:  device,
-		breaker: p.createCircuitBreaker(device.ID),
+		client:    client,
+		device:    device,
+		breaker:   p.createCircuitBreaker(device),
+		createdAt: time.Now(),
 	}
 
 	p.logger.Info().
@@ -595,7 +624,8 @@ func (p *ConnectionPool) idleReaperLoop() {
 	}
 }
 
-// reapIdleConnections closes connections that have been idle too long.
+// reapIdleConnections closes connections that have been idle too long
+// or have exceeded their MaxTTL lifetime.
 func (p *ConnectionPool) reapIdleConnections() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -603,8 +633,14 @@ func (p *ConnectionPool) reapIdleConnections() {
 	now := time.Now()
 	for deviceID, pc := range p.clients {
 		pc.mu.Lock()
-		if now.Sub(pc.client.LastUsed()) > p.config.IdleTimeout {
-			p.logger.Debug().Str("device_id", deviceID).Msg("Closing idle connection")
+		idle := now.Sub(pc.client.LastUsed()) > p.config.IdleTimeout
+		expired := p.config.MaxTTL > 0 && now.Sub(pc.createdAt) > p.config.MaxTTL
+		if idle || expired {
+			reason := "idle"
+			if expired {
+				reason = "max_ttl"
+			}
+			p.logger.Debug().Str("device_id", deviceID).Str("reason", reason).Msg("Closing connection")
 			pc.client.Disconnect()
 			delete(p.clients, deviceID)
 		}

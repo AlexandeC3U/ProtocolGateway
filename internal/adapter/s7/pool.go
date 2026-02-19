@@ -21,6 +21,7 @@ type Pool struct {
 	metrics        *metrics.Registry
 	maxConnections int
 	idleTimeout    time.Duration
+	maxTTL         time.Duration
 	healthCheck    time.Duration
 	stopChan       chan struct{}
 	wg             sync.WaitGroup
@@ -32,6 +33,7 @@ type clientEntry struct {
 	client          *Client
 	device          *domain.Device
 	breaker         *gobreaker.CircuitBreaker
+	createdAt       time.Time // Connection creation time for MaxTTL enforcement
 	lastUse         time.Time
 	lastError       error
 	connectFailures int
@@ -55,6 +57,10 @@ type PoolConfig struct {
 
 	// CircuitBreakerConfig holds circuit breaker settings
 	CircuitBreaker CircuitBreakerConfig
+
+	// MaxTTL is the maximum lifetime for a connection, even if active.
+	// Zero means no limit. Useful for S7 PLCs that leak resources.
+	MaxTTL time.Duration
 }
 
 // CircuitBreakerConfig holds circuit breaker configuration.
@@ -96,6 +102,7 @@ func NewPool(config PoolConfig, logger zerolog.Logger, metricsReg *metrics.Regis
 		metrics:        metricsReg,
 		maxConnections: config.MaxConnections,
 		idleTimeout:    config.IdleTimeout,
+		maxTTL:         config.MaxTTL,
 		healthCheck:    config.HealthCheckInterval,
 		stopChan:       make(chan struct{}),
 	}
@@ -136,15 +143,39 @@ func (p *Pool) GetOrCreate(ctx context.Context, device *domain.Device) (*Client,
 		return nil, err
 	}
 
-	// Create circuit breaker for this device
+	// Create circuit breaker for this device (with per-device overrides)
+	cbMaxRequests := uint32(3)
+	cbInterval := 10 * time.Second
+	cbTimeout := 30 * time.Second
+	cbFailureThreshold := uint32(5)
+	cbFailureRatio := 0.5
+
+	if cb := device.Connection.CircuitBreaker; cb != nil {
+		if cb.MaxRequests > 0 {
+			cbMaxRequests = cb.MaxRequests
+		}
+		if cb.Interval > 0 {
+			cbInterval = cb.Interval
+		}
+		if cb.Timeout > 0 {
+			cbTimeout = cb.Timeout
+		}
+		if cb.FailureThreshold > 0 {
+			cbFailureThreshold = cb.FailureThreshold
+		}
+		if cb.FailureRatio > 0 {
+			cbFailureRatio = cb.FailureRatio
+		}
+	}
+
 	breaker := gobreaker.NewCircuitBreaker(gobreaker.Settings{
 		Name:        fmt.Sprintf("s7-%s", device.ID),
-		MaxRequests: 3,
-		Interval:    10 * time.Second,
-		Timeout:     30 * time.Second,
+		MaxRequests: cbMaxRequests,
+		Interval:    cbInterval,
+		Timeout:     cbTimeout,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			failureRatio := float64(counts.TotalFailures) / float64(counts.Requests)
-			return counts.Requests >= 5 && failureRatio >= 0.5
+			ratio := float64(counts.TotalFailures) / float64(counts.Requests)
+			return counts.Requests >= cbFailureThreshold && ratio >= cbFailureRatio
 		},
 		OnStateChange: func(name string, from, to gobreaker.State) {
 			p.logger.Info().
@@ -155,11 +186,13 @@ func (p *Pool) GetOrCreate(ctx context.Context, device *domain.Device) (*Client,
 		},
 	})
 
+	now := time.Now()
 	p.clients[device.ID] = &clientEntry{
-		client:  client,
-		device:  device,
-		breaker: breaker,
-		lastUse: time.Now(),
+		client:    client,
+		device:    device,
+		breaker:   breaker,
+		createdAt: now,
+		lastUse:   now,
 	}
 
 	return client, nil
@@ -536,7 +569,9 @@ func (p *Pool) reapIdleConnections() {
 	toRemove := make([]string, 0)
 
 	for id, entry := range p.clients {
-		if now.Sub(entry.lastUse) > p.idleTimeout {
+		idle := now.Sub(entry.lastUse) > p.idleTimeout
+		expired := p.maxTTL > 0 && now.Sub(entry.createdAt) > p.maxTTL
+		if idle || expired {
 			toRemove = append(toRemove, id)
 		}
 	}

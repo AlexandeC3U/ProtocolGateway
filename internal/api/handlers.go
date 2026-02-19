@@ -2,6 +2,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -409,11 +410,12 @@ func (dm *DeviceManager) saveDevicesUnlocked() error {
 
 // APIHandler provides HTTP handlers for the web UI.
 type APIHandler struct {
-	deviceManager *DeviceManager
-	logger        zerolog.Logger
-	topicTracker  TopicTracker
-	subscriptions SubscriptionProvider
-	logProvider   LogProvider
+	deviceManager    *DeviceManager
+	logger           zerolog.Logger
+	topicTracker     TopicTracker
+	subscriptions    SubscriptionProvider
+	logProvider      LogProvider
+	connectionTester ConnectionTester
 }
 
 // NewAPIHandler creates a new API handler.
@@ -436,6 +438,13 @@ type SubscriptionProvider interface {
 	SubscribedTopics() []string
 }
 
+// ConnectionTester tests a real protocol connection to a device.
+// Implemented by domain.ProtocolManager or individual protocol pools.
+type ConnectionTester interface {
+	// ReadTag attempts a single tag read to verify connectivity.
+	ReadTag(ctx context.Context, device *domain.Device, tag *domain.Tag) (*domain.DataPoint, error)
+}
+
 // SetTopicTracker wires in a runtime topic tracker (optional).
 func (h *APIHandler) SetTopicTracker(tracker TopicTracker) {
 	h.topicTracker = tracker
@@ -449,6 +458,12 @@ func (h *APIHandler) SetSubscriptionProvider(provider SubscriptionProvider) {
 // SetLogProvider wires in a container log provider (optional).
 func (h *APIHandler) SetLogProvider(provider LogProvider) {
 	h.logProvider = provider
+}
+
+// SetConnectionTester wires in a connection tester (optional).
+// When set, TestConnectionHandler will perform real protocol connections.
+func (h *APIHandler) SetConnectionTester(tester ConnectionTester) {
+	h.connectionTester = tester
 }
 
 // GetDevicesHandler returns all devices.
@@ -587,11 +602,59 @@ func (h *APIHandler) TestConnectionHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// TODO: Actually test the connection with the protocol pool
-	// For now, just return success if validation passes
+	// If no connection tester is wired in, fall back to validation-only
+	if h.connectionTester == nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "success",
+			"message": "Connection test passed (validation only — no protocol pool available)",
+		})
+		return
+	}
+
+	// Attempt a real connection by reading the first tag
+	if len(device.Tags) == 0 {
+		http.Error(w, "Device has no tags to test", http.StatusBadRequest)
+		return
+	}
+
+	// Use a short timeout to prevent hanging on unresponsive devices
+	timeout := device.Connection.Timeout
+	if timeout == 0 {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+
+	tag := device.Tags[0]
+	start := time.Now()
+	_, err := h.connectionTester.ReadTag(ctx, &device, &tag)
+	elapsed := time.Since(start)
+
 	w.Header().Set("Content-Type", "application/json")
+
+	if err != nil {
+		h.logger.Warn().
+			Err(err).
+			Str("device_id", device.ID).
+			Str("protocol", string(device.Protocol)).
+			Dur("elapsed", elapsed).
+			Msg("Connection test failed")
+
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":   "error",
+			"message":  fmt.Sprintf("Connection test failed: %v", err),
+			"elapsed":  elapsed.String(),
+			"protocol": device.Protocol,
+		})
+		return
+	}
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":  "success",
-		"message": "Connection test passed (validation only)",
+		"status":   "success",
+		"message":  "Connection test passed",
+		"elapsed":  elapsed.String(),
+		"protocol": device.Protocol,
 	})
 }

@@ -125,6 +125,12 @@ type PoolConfig struct {
 
 	// CircuitBreakerName is the name for the circuit breaker
 	CircuitBreakerName string
+
+	// MaxTTL is the maximum lifetime for a connection, even if active.
+	// After this duration, the connection is closed and re-established on next use.
+	// Zero means no limit (connections live until idle timeout or error).
+	// Useful for PLCs that leak resources over long sessions.
+	MaxTTL time.Duration
 }
 
 // DefaultPoolConfig returns a PoolConfig with sensible defaults.

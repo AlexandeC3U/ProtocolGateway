@@ -191,6 +191,36 @@ type ConnectionConfig struct {
 
 	// S7Timeout is the connection timeout for S7 (default: 10s)
 	S7Timeout time.Duration `json:"s7_timeout,omitempty" yaml:"s7_timeout,omitempty"`
+
+	// === Circuit Breaker Override ===
+
+	// CircuitBreaker provides per-device circuit breaker overrides.
+	// When set, these values override the pool-level defaults.
+	// Useful for fast-fail on critical devices or lenient thresholds on flaky legacy PLCs.
+	CircuitBreaker *CircuitBreakerConfig `json:"circuit_breaker,omitempty" yaml:"circuit_breaker,omitempty"`
+}
+
+// CircuitBreakerConfig holds per-device circuit breaker settings.
+// All fields are optional — zero values mean "use pool default".
+type CircuitBreakerConfig struct {
+	// MaxRequests is the number of requests allowed in the half-open state.
+	MaxRequests uint32 `json:"max_requests,omitempty" yaml:"max_requests,omitempty"`
+
+	// Interval is the cyclic period of the closed state for clearing internal counts.
+	// If 0, internal counts are never cleared in the closed state.
+	Interval time.Duration `json:"interval,omitempty" yaml:"interval,omitempty"`
+
+	// Timeout is the period of the open state, after which the circuit breaker
+	// transitions to half-open.
+	Timeout time.Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+
+	// FailureThreshold is the minimum number of requests before the failure ratio
+	// is evaluated (for ratio-based tripping).
+	FailureThreshold uint32 `json:"failure_threshold,omitempty" yaml:"failure_threshold,omitempty"`
+
+	// FailureRatio is the failure ratio (0.0-1.0) that triggers the circuit breaker.
+	// For example, 0.6 means trip when 60% of requests fail.
+	FailureRatio float64 `json:"failure_ratio,omitempty" yaml:"failure_ratio,omitempty"`
 }
 
 // Validate performs validation on the device configuration.

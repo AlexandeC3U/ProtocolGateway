@@ -342,10 +342,12 @@ func (p *ConnectionPool) reapIdleSessions() {
 
 	// Second pass: check each candidate (lock session.mu individually)
 	toReap := make([]string, 0)
+	now := time.Now()
 	for _, c := range candidates {
 		c.session.mu.Lock()
-		// Use hasRecentActivity which checks BOTH client.LastUsed AND subscription activity
-		if !c.session.hasRecentActivity(p.config.IdleTimeout) {
+		idle := !c.session.hasRecentActivity(p.config.IdleTimeout)
+		expired := p.config.MaxTTL > 0 && now.Sub(c.session.createdAt) > p.config.MaxTTL
+		if idle || expired {
 			toReap = append(toReap, c.epKey)
 		}
 		c.session.mu.Unlock()
@@ -368,11 +370,18 @@ func (p *ConnectionPool) reapIdleSessions() {
 
 		session.mu.Lock()
 		// Re-check under lock in case activity happened
-		if !session.hasRecentActivity(p.config.IdleTimeout) {
+		idle := !session.hasRecentActivity(p.config.IdleTimeout)
+		expired := p.config.MaxTTL > 0 && time.Since(session.createdAt) > p.config.MaxTTL
+		if idle || expired {
+			reason := "idle"
+			if expired {
+				reason = "max_ttl"
+			}
 			p.logger.Debug().
 				Str("endpoint", epKey[:min(len(epKey), 50)]).
 				Bool("had_subscriptions", session.hasActiveSubscriptions).
-				Msg("Closing idle session")
+				Str("reason", reason).
+				Msg("Closing session")
 			session.client.Disconnect()
 
 			// Remove all device bindings for this session

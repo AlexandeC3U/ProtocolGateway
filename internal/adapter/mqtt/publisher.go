@@ -347,6 +347,7 @@ func (p *Publisher) publishRaw(ctx context.Context, topic string, payload []byte
 	token := client.Publish(topic, qos, retained, payload)
 
 	// Wait for publish with context
+	publishStart := time.Now()
 	publishDone := make(chan bool, 1)
 	go func() {
 		publishDone <- token.WaitTimeout(p.config.PublishTimeout)
@@ -354,24 +355,26 @@ func (p *Publisher) publishRaw(ctx context.Context, topic string, payload []byte
 
 	select {
 	case success := <-publishDone:
+		latency := time.Since(publishStart)
 		if !success {
 			p.stats.MessagesFailed.Add(1)
 			if p.metrics != nil {
-				p.metrics.RecordMQTTPublish(false, p.config.PublishTimeout.Seconds())
+				p.metrics.RecordMQTTPublish(false, latency.Seconds())
 			}
 			return fmt.Errorf("%w: publish timeout", domain.ErrMQTTPublishFailed)
 		}
 		if token.Error() != nil {
 			p.stats.MessagesFailed.Add(1)
 			if p.metrics != nil {
-				p.metrics.RecordMQTTPublish(false, 0)
+				p.metrics.RecordMQTTPublish(false, latency.Seconds())
 			}
 			return fmt.Errorf("%w: %v", domain.ErrMQTTPublishFailed, token.Error())
 		}
 	case <-ctx.Done():
+		latency := time.Since(publishStart)
 		p.stats.MessagesFailed.Add(1)
 		if p.metrics != nil {
-			p.metrics.RecordMQTTPublish(false, p.config.PublishTimeout.Seconds())
+			p.metrics.RecordMQTTPublish(false, latency.Seconds())
 		}
 		return fmt.Errorf("%w: %v", domain.ErrMQTTPublishFailed, ctx.Err())
 	}
@@ -380,9 +383,9 @@ func (p *Publisher) publishRaw(ctx context.Context, topic string, payload []byte
 	p.stats.BytesSent.Add(uint64(len(payload)))
 	p.recordTopicPublish(topic, len(payload))
 
-	// Record Prometheus metrics
+	// Record Prometheus metrics with actual measured latency
 	if p.metrics != nil {
-		p.metrics.RecordMQTTPublish(true, 0) // TODO: measure actual latency
+		p.metrics.RecordMQTTPublish(true, time.Since(publishStart).Seconds())
 	}
 
 	return nil

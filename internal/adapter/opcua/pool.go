@@ -116,6 +116,10 @@ type PoolConfig struct {
 	// Cold-Start Storm Protection (Kubernetes restart scenarios)
 	StartupJitterMax   time.Duration // Max random delay on startup (0 = no jitter)
 	WarmupRampDuration time.Duration // Gradual capacity ramp-up period (0 = full capacity immediately)
+
+	// MaxTTL is the maximum lifetime for a session, even if active.
+	// Zero means no limit. Forces periodic reconnection for long-running sessions.
+	MaxTTL time.Duration
 }
 
 // DefaultPoolConfig returns sensible defaults for industrial-scale deployments.
@@ -269,7 +273,7 @@ func (p *ConnectionPool) getClientFromExistingSession(ctx context.Context, sessi
 			Device:         device,
 			EndpointKey:    epKey,
 			MonitoredItems: make(map[string]uint32),
-			breaker:        p.createDeviceBreaker(device.ID),
+			breaker:        p.createDeviceBreaker(device),
 		}
 		session.devices[device.ID] = binding
 		p.devices[device.ID] = binding
@@ -324,6 +328,7 @@ func (p *ConnectionPool) createNewSession(ctx context.Context, device *domain.De
 		endpointURL: client.config.EndpointURL,
 		breaker:     p.createCircuitBreaker(epKey),
 		devices:     make(map[string]*DeviceBinding),
+		createdAt:   time.Now(),
 		maxInFlight: int64(p.config.MaxInFlightPerEndpoint), // Per-endpoint fairness limit
 		subscriptionState: &SubscriptionRecoveryState{
 			MonitoredItems: make(map[uint32]*MonitoredItemState),
@@ -335,7 +340,7 @@ func (p *ConnectionPool) createNewSession(ctx context.Context, device *domain.De
 		Device:         device,
 		EndpointKey:    epKey,
 		MonitoredItems: make(map[string]uint32),
-		breaker:        p.createDeviceBreaker(device.ID),
+		breaker:        p.createDeviceBreaker(device),
 	}
 	session.devices[device.ID] = binding
 	p.devices[device.ID] = binding
@@ -448,15 +453,37 @@ func (p *ConnectionPool) createCircuitBreaker(epKey string) *gobreaker.CircuitBr
 // This breaker trips on config/semantic errors specific to ONE device
 // (bad node IDs, access denied, type mismatches, etc.).
 // It does NOT trip on connection errors - those go to the endpoint breaker.
-func (p *ConnectionPool) createDeviceBreaker(deviceID string) *gobreaker.CircuitBreaker {
+// If the device has a CircuitBreakerConfig override, those values take precedence.
+func (p *ConnectionPool) createDeviceBreaker(device *domain.Device) *gobreaker.CircuitBreaker {
+	// Device-breaker defaults
+	maxRequests := uint32(1)
+	interval := 30 * time.Second
+	timeout := 15 * time.Second
+	consecutiveThreshold := uint32(5)
+
+	// Apply per-device overrides
+	if cb := device.Connection.CircuitBreaker; cb != nil {
+		if cb.MaxRequests > 0 {
+			maxRequests = cb.MaxRequests
+		}
+		if cb.Interval > 0 {
+			interval = cb.Interval
+		}
+		if cb.Timeout > 0 {
+			timeout = cb.Timeout
+		}
+		if cb.FailureThreshold > 0 {
+			consecutiveThreshold = cb.FailureThreshold
+		}
+	}
+
 	return gobreaker.NewCircuitBreaker(gobreaker.Settings{
-		Name:        fmt.Sprintf("opcua-device-%s", deviceID),
-		MaxRequests: 1,                // Allow 1 request in half-open to test recovery
-		Interval:    30 * time.Second, // Reset counters after 30s of no errors
-		Timeout:     15 * time.Second, // Stay open for 15s before testing
+		Name:        fmt.Sprintf("opcua-device-%s", device.ID),
+		MaxRequests: maxRequests,
+		Interval:    interval,
+		Timeout:     timeout,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			// Trip after 5 consecutive device-level failures
-			return counts.ConsecutiveFailures >= 5
+			return counts.ConsecutiveFailures >= consecutiveThreshold
 		},
 		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
 			p.logger.Warn().

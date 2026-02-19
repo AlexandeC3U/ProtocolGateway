@@ -176,6 +176,9 @@ func parseModbusAddress(addr string) (registerType string, address int, err erro
 		if err != nil {
 			return "", 0, fmt.Errorf("invalid IEC address number: %s", addr)
 		}
+		if num < 0 {
+			return "", 0, fmt.Errorf("negative IEC address: %s", addr)
+		}
 
 		switch prefix {
 		case "MW", "QW":
@@ -198,6 +201,9 @@ func parseModbusAddress(addr string) (registerType string, address int, err erro
 		num, err := strconv.Atoi(numStr)
 		if err != nil {
 			return "", 0, fmt.Errorf("invalid Modicon address number: %s", addr)
+		}
+		if num < 0 {
+			return "", 0, fmt.Errorf("negative Modicon address: %s", addr)
 		}
 
 		switch prefix {
@@ -229,6 +235,9 @@ func parseModbusAddress(addr string) (registerType string, address int, err erro
 			num, err := strconv.Atoi(numStr)
 			if err != nil {
 				return "", 0, fmt.Errorf("invalid symbolic address number: %s", addr)
+			}
+			if num < 0 {
+				return "", 0, fmt.Errorf("negative symbolic address: %s", addr)
 			}
 			return prefix.regType, num, nil
 		}

@@ -113,7 +113,9 @@ test-fuzz-long:
 	@echo "Running FuzzReorderBytes_4Byte for 1m..."
 	$(GOTEST) -tags=fuzz -fuzz=FuzzReorderBytes_4Byte -fuzztime=1m ./testing/fuzz/conversion/
 	@echo "Running FuzzModbusAddress for 1m..."
-	$(GOTEST) -tags=fuzz -fuzz=FuzzModbusAddress -fuzztime=1m ./testing/fuzz/parsing/
+	$(GOTEST) -tags=fuzz -fuzz='^FuzzModbusAddress$$' -fuzztime=1m ./testing/fuzz/parsing/
+	@echo "Running FuzzS7PacketParsing for 1m..."
+	$(GOTEST) -tags=fuzz -fuzz=FuzzS7PacketParsing -fuzztime=1m ./testing/fuzz/protocol/
 
 # Run end-to-end tests
 test-e2e:
@@ -129,6 +131,11 @@ test-e2e-load:
 test-e2e-memory:
 	@echo "Running e2e memory leak tests..."
 	$(GOTEST) -v -tags=e2e -run "TestMemoryLeak" -timeout 10m ./testing/e2e/...
+
+# Run e2e failover tests (device failure, circuit breaker, cascading recovery)
+test-e2e-failover:
+	@echo "Running e2e failover tests..."
+	$(GOTEST) -v -tags=e2e -run "TestFailover" -timeout 10m ./testing/e2e/...
 
 # Alias for e2e tests
 e2e: test-e2e
@@ -332,6 +339,7 @@ help:
 	@echo "  make test-e2e           - Run end-to-end tests"
 	@echo "  make test-e2e-load      - Run e2e high load tests"
 	@echo "  make test-e2e-memory    - Run e2e memory leak tests"
+	@echo "  make test-e2e-failover  - Run e2e failover tests"
 	@echo "  make test-fuzz          - Run fuzz tests (30s)"
 	@echo "  make test-race          - Run tests with race detector"
 	@echo "  make test-all           - Run full test suite"

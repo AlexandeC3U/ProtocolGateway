@@ -26,6 +26,7 @@ type pooledSession struct {
 	endpointURL     string
 	breaker         *gobreaker.CircuitBreaker // Per-endpoint circuit breaker
 	devices         map[string]*DeviceBinding // Devices using this session
+	createdAt       time.Time                 // Session creation time for MaxTTL enforcement
 	lastError       error
 	connectFailures int
 	nextReconnectAt time.Time
