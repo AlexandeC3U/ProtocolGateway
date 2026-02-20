@@ -257,12 +257,21 @@ func (p *Pool) ReadTag(ctx context.Context, device *domain.Device, tag *domain.T
 		_ = client // Used indirectly via entry
 	}
 
+	start := time.Now()
+
 	// Execute read through circuit breaker
 	result, err := entry.breaker.Execute(func() (interface{}, error) {
 		return entry.client.ReadTag(ctx, tag)
 	})
 
+	if p.metrics != nil {
+		p.metrics.RecordS7ReadDuration(device.ID, time.Since(start).Seconds())
+	}
+
 	if err != nil {
+		if p.metrics != nil {
+			p.metrics.RecordS7TagError(device.ID, tag.ID)
+		}
 		if err == gobreaker.ErrOpenState {
 			return nil, domain.ErrCircuitBreakerOpen
 		}
@@ -289,10 +298,16 @@ func (p *Pool) ReadTags(ctx context.Context, device *domain.Device, tags []*doma
 		_ = client
 	}
 
+	start := time.Now()
+
 	// Execute read through circuit breaker
 	result, err := entry.breaker.Execute(func() (interface{}, error) {
 		return entry.client.ReadTags(ctx, tags)
 	})
+
+	if p.metrics != nil {
+		p.metrics.RecordS7ReadDuration(device.ID, time.Since(start).Seconds())
+	}
 
 	if err != nil {
 		if err == gobreaker.ErrOpenState {
@@ -321,12 +336,21 @@ func (p *Pool) WriteTag(ctx context.Context, device *domain.Device, tag *domain.
 		_ = client
 	}
 
+	start := time.Now()
+
 	// Execute write through circuit breaker
 	_, err := entry.breaker.Execute(func() (interface{}, error) {
 		return nil, entry.client.WriteTag(ctx, tag, value)
 	})
 
+	if p.metrics != nil {
+		p.metrics.RecordS7WriteDuration(device.ID, time.Since(start).Seconds())
+	}
+
 	if err != nil {
+		if p.metrics != nil {
+			p.metrics.RecordS7TagError(device.ID, tag.ID)
+		}
 		if err == gobreaker.ErrOpenState {
 			return domain.ErrCircuitBreakerOpen
 		}
@@ -356,6 +380,8 @@ func (p *Pool) WriteTags(ctx context.Context, device *domain.Device, writes []Ta
 		p.mu.RUnlock()
 	}
 
+	start := time.Now()
+
 	// Execute batch write through circuit breaker.
 	// We pass the first non-nil error to the breaker for state tracking,
 	// but always return the full per-item error slice to the caller.
@@ -369,12 +395,27 @@ func (p *Pool) WriteTags(ctx context.Context, device *domain.Device, writes []Ta
 		return errs, nil
 	})
 
+	if p.metrics != nil {
+		p.metrics.RecordS7WriteDuration(device.ID, time.Since(start).Seconds())
+	}
+
 	if err == gobreaker.ErrOpenState {
 		errors := make([]error, len(writes))
 		for i := range errors {
 			errors[i] = domain.ErrCircuitBreakerOpen
 		}
 		return errors
+	}
+
+	// Record per-tag errors for metrics
+	if p.metrics != nil {
+		if perItemErrs, ok := result.([]error); ok {
+			for i, e := range perItemErrs {
+				if e != nil && i < len(writes) {
+					p.metrics.RecordS7TagError(device.ID, writes[i].Tag.ID)
+				}
+			}
+		}
 	}
 
 	// Result contains the per-item error slice from WriteTags
@@ -517,9 +558,24 @@ func (p *Pool) publishActiveConnectionMetrics() {
 	active := 0
 	p.mu.RLock()
 	for _, entry := range p.clients {
-		if entry.client.IsConnected() {
+		connected := entry.client.IsConnected()
+		if connected {
 			active++
 		}
+
+		// Per-device metrics
+		deviceID := entry.client.DeviceID()
+		p.metrics.RecordS7DeviceConnected(deviceID, connected)
+
+		// Circuit breaker state: 0=closed, 1=half-open, 2=open
+		breakerState := 0
+		switch entry.breaker.State() {
+		case gobreaker.StateHalfOpen:
+			breakerState = 1
+		case gobreaker.StateOpen:
+			breakerState = 2
+		}
+		p.metrics.RecordS7BreakerState(deviceID, breakerState)
 	}
 	p.mu.RUnlock()
 

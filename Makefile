@@ -132,6 +132,26 @@ test-e2e-memory:
 	@echo "Running e2e memory leak tests..."
 	$(GOTEST) -v -tags=e2e -run "TestMemoryLeak" -timeout 10m ./testing/e2e/...
 
+# Run S7 integration tests (connection, error handling)
+test-integration-s7:
+	@echo "Running S7 integration tests..."
+	$(GOTEST) -v -tags=integration ./testing/integration/s7/...
+
+# Run MQTT integration tests (connection, publish, reconnection)
+test-integration-mqtt:
+	@echo "Running MQTT integration tests..."
+	$(GOTEST) -v -tags=integration ./testing/integration/mqtt/...
+
+# Run Modbus integration tests
+test-integration-modbus:
+	@echo "Running Modbus integration tests..."
+	$(GOTEST) -v -tags=integration ./testing/integration/modbus/...
+
+# Run OPC UA integration tests
+test-integration-opcua:
+	@echo "Running OPC UA integration tests..."
+	$(GOTEST) -v -tags=integration ./testing/integration/opcua/...
+
 # Run e2e failover tests (device failure, circuit breaker, cascading recovery)
 test-e2e-failover:
 	@echo "Running e2e failover tests..."
@@ -346,6 +366,10 @@ help:
 	@echo "  make test-cover         - Run tests with coverage report"
 	@echo "  make test-coverage-html - Generate HTML coverage report"
 	@echo "  make test-integration   - Run integration tests"
+	@echo "  make test-integration-s7    - Run S7 integration tests"
+	@echo "  make test-integration-mqtt  - Run MQTT integration tests"
+	@echo "  make test-integration-modbus - Run Modbus integration tests"
+	@echo "  make test-integration-opcua - Run OPC UA integration tests"
 	@echo "  make test-e2e           - Run end-to-end tests"
 	@echo "  make test-e2e-load      - Run e2e high load tests"
 	@echo "  make test-e2e-memory    - Run e2e memory leak tests"

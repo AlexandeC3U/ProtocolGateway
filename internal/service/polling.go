@@ -263,6 +263,76 @@ func (s *PollingService) UnregisterDevice(deviceID string) error {
 	return nil
 }
 
+// ReplaceDevice atomically updates a device's configuration while preserving
+// polling runtime state (stats, last poll time, error history). If the poll
+// interval changed, the poller goroutine is restarted with the new interval.
+// If only tags or non-connection fields changed, the device pointer is swapped
+// in-place and the next poll cycle picks up the new config automatically.
+func (s *PollingService) ReplaceDevice(ctx context.Context, device *domain.Device) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	dp, exists := s.devices[device.ID]
+	if !exists {
+		// Device not registered — treat as a fresh registration.
+		s.mu.Unlock()
+		err := s.RegisterDevice(ctx, device)
+		s.mu.Lock()
+		return err
+	}
+
+	if !device.Enabled {
+		// Device disabled — unregister it.
+		if dp.running.Load() {
+			dp.stopOnce.Do(func() {
+				close(dp.stopChan)
+			})
+		}
+		delete(s.devices, device.ID)
+		s.logger.Info().Str("device_id", device.ID).Msg("Device disabled, unregistered")
+		return nil
+	}
+
+	oldInterval := dp.device.PollInterval
+
+	// Swap the device pointer. The next pollDevice() call reads from dp.device,
+	// so it will automatically use the new tags, connection config, etc.
+	dp.mu.Lock()
+	dp.device = device
+	dp.mu.Unlock()
+
+	s.logger.Info().
+		Str("device_id", device.ID).
+		Int("tags", len(device.Tags)).
+		Dur("poll_interval", device.PollInterval).
+		Msg("Replaced device configuration (stats preserved)")
+
+	// If the poll interval changed, we need to restart the poller goroutine
+	// because the ticker was created with the old interval.
+	if oldInterval != device.PollInterval && s.started.Load() {
+		s.logger.Info().
+			Str("device_id", device.ID).
+			Dur("old_interval", oldInterval).
+			Dur("new_interval", device.PollInterval).
+			Msg("Poll interval changed, restarting poller")
+
+		// Stop the old poller goroutine
+		if dp.running.Load() {
+			dp.stopOnce.Do(func() {
+				close(dp.stopChan)
+			})
+		}
+
+		// Create a new stop channel and reset the once guard for the restart
+		dp.stopChan = make(chan struct{})
+		dp.stopOnce = sync.Once{}
+
+		s.startDevicePoller(dp)
+	}
+
+	return nil
+}
+
 // startDevicePoller starts the polling loop for a device.
 // Adds jitter to poll intervals to prevent synchronized bursts across devices.
 func (s *PollingService) startDevicePoller(dp *devicePoller) {

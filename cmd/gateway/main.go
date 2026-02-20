@@ -179,7 +179,7 @@ func main() {
 			}
 			return pollingSvc.RegisterDevice(ctx, device)
 		},
-		// On device edit - use safe replacement pattern
+		// On device edit - atomically replace config, preserving polling state
 		func(device *domain.Device) error {
 			// Validate protocol is supported
 			if _, exists := protocolManager.GetPool(device.Protocol); !exists {
@@ -189,10 +189,7 @@ func main() {
 					Msg("Device uses unsupported protocol, skipping registration")
 				return domain.ErrProtocolNotSupported
 			}
-			// TODO: Implement ReplaceDevice() to preserve poll jitter, retry state, etc.
-			// For now, unregister and re-register (state is lost)
-			pollingSvc.UnregisterDevice(device.ID)
-			return pollingSvc.RegisterDevice(ctx, device)
+			return pollingSvc.ReplaceDevice(ctx, device)
 		},
 		// On device delete
 		func(id string) error {

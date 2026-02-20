@@ -1,6 +1,6 @@
 # TODO — Connector Gateway Roadmap
 
-Last verified against codebase: **2026-02-19**
+Last verified against codebase: **2026-02-20**
 
 Items are organized by priority. Each item notes what exists today vs what's missing.
 
@@ -81,14 +81,9 @@ These features are **already implemented** but never connected to the main appli
 
 ---
 
-### 5. Device Edit Resets Polling State
+### ~~5. Device Edit Resets Polling State~~ ✅ DONE
 
-**Status**: When a device is updated via the API, `main.go` calls `pollingSvc.UnregisterDevice()` then `pollingSvc.RegisterDevice()`. This resets poll jitter, retry state, circuit breaker state, and cancels any in-progress operations.
-
-**What's needed**:
-- Implement `PollingService.ReplaceDevice()` that atomically swaps the device config while preserving the poller's runtime state (next poll time, backoff state, etc.)
-- Only re-create the protocol client if connection parameters actually changed
-- If only tags changed, update tags without dropping the connection
+**Resolved**: Added `PollingService.ReplaceDevice()` that atomically swaps the device pointer while preserving all runtime state (stats, poll counts, last poll time, error history). The next poll cycle automatically picks up new tags, connection config, and UNS prefix. If the poll interval changed, the poller goroutine is restarted with a new ticker; otherwise no goroutine restart occurs. Updated `main.go` device edit callback to use `ReplaceDevice()` instead of the old unregister+register pattern.
 
 ---
 
@@ -169,9 +164,251 @@ These features are **already implemented** but never connected to the main appli
 
 ---
 
+### 14. Native MQTT Device Support (MQTT → MQTT)
+
+**Status**: Partial foundation exists, but end-to-end ingestion is **not implemented**.
+
+**What exists**:
+- MQTT publisher + reconnect/buffering (`internal/adapter/mqtt/publisher.go`)
+- MQTT subscription for *commands* (write path) via `CommandHandler` (`internal/service/command_handler.go`)
+- `ProtocolMQTT` exists in `domain` (`internal/domain/device.go`) and tag validation allows it (`internal/domain/tag.go`)
+
+**What's missing**:
+- No `ProtocolPool` implementation for MQTT (no MQTT "client" that subscribes to telemetry topics and produces `DataPoint`s)
+- `main.go` does not register a pool for `ProtocolMQTT`, so devices configured with protocol `mqtt` are treated as unsupported and skipped
+
+---
+
+#### Architecture Spec
+
+##### Fundamental Difference: Push vs Poll
+
+The three existing adapters (Modbus, OPC UA, S7) are **poll-based** — the gateway initiates reads on a timer. MQTT is **push-based** — the source broker delivers messages via subscriptions. This means:
+
+- **No polling goroutine needed**: The `PollingService` should detect `ProtocolMQTT` devices and skip creating a ticker-based `devicePoller`. Instead, the MQTT source adapter delivers `DataPoint`s directly to the publisher via a callback.
+- **`ReadTags` still works**: For compatibility with the `ProtocolPool` interface, `ReadTags` can return the latest cached values (last-value cache per tag). This enables health checks, test-connection, and status queries.
+- **`WriteTag` publishes**: A write to an MQTT device = publish a message to a configured "command" topic on the source broker.
+
+##### Connection Model: Per-Broker Client Sharing
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   MQTT Source Pool                          │
+│                                                             │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  brokerClients map[brokerKey]*brokerClient           │   │
+│  │                                                      │   │
+│  │  Key = hash(broker_url + username + tls_config)      │   │
+│  │                                                      │   │
+│  │  ┌────────────────────┐  ┌────────────────────┐      │   │
+│  │  │ broker: mqtt://A   │  │ broker: mqtts://B  │      │   │
+│  │  │ paho.Client        │  │ paho.Client        │      │   │
+│  │  │ devices: [D1,D2,D3]│  │ devices: [D4,D5]   │      │   │
+│  │  │ subs: 15 topics    │  │ subs: 8 topics     │      │   │
+│  │  │ breaker: closed    │  │ breaker: open      │      │   │
+│  │  └────────────────────┘  └────────────────────┘      │   │
+│  └──────────────────────────────────────────────────────┘   │
+│                                                             │
+│  Unlike Modbus/S7 (1 connection per device), MQTT devices   │
+│  sharing the same broker reuse a single TCP connection.     │
+│  Same pattern as OPC UA session sharing per endpoint.       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Broker key**: `broker_url + username + password_hash + tls_fingerprint`. Devices with identical broker configs share one `paho.Client`. Changing a credential triggers a new client (same as OPC UA cert rotation).
+
+**Why not one client per device?** A device is a logical grouping of topics. 50 IoT sensors on the same EMQX broker should not open 50 TCP connections — MQTT brokers (and firewalls) have connection limits. One client with 50 subscriptions is vastly more efficient.
+
+**Why not reuse the existing publisher client?** The source broker may be different from the gateway's output broker. Even if they're the same, using a separate client provides isolation (source subscriptions don't interfere with publish QoS), independent reconnect, and a clean client ID namespace (e.g., `gateway-source-{hash}` vs `gateway-publisher`).
+
+##### Circuit Breakers: Two-Tier (Like OPC UA)
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Broker Breaker (per brokerClient)                   │
+│  Triggers on: connection lost, auth failure,         │
+│               repeated subscribe failures            │
+│  Effect: ALL devices on this broker are blocked      │
+│                                                      │
+│  Device Staleness Detector (per device)              │
+│  Triggers on: no messages received for               │
+│               staleness_timeout (default: 5×interval)│
+│  Effect: device.Status → "stale", quality →          │
+│          "uncertain", alert via metrics              │
+│  NOT a circuit breaker — the device isn't "failing", │
+│  it's just silent. No requests to block.             │
+└──────────────────────────────────────────────────────┘
+```
+
+Traditional per-device circuit breakers don't apply here — there are no outbound requests to block. Instead, "device health" is inferred from message frequency. If a device that normally publishes every 5s goes silent for 25s, it's marked stale.
+
+##### Subscription Strategy: Per-Tag Topics
+
+```yaml
+# devices.yaml — MQTT device example
+- id: "iot-sensor-floor2"
+  name: Floor 2 Environmental Sensors
+  protocol: mqtt
+  enabled: true
+  uns_prefix: plant1/floor2/environment
+  connection:
+    mqtt_broker_url: tcp://edge-broker:1883
+    mqtt_username: gateway
+    mqtt_password: secret123
+    mqtt_qos: 1
+    mqtt_clean_session: true
+    mqtt_staleness_timeout: 30s     # mark stale if no messages for 30s
+  tags:
+    - id: temp-1
+      name: Temperature
+      topic_suffix: temperature
+      mqtt_source_topic: "sensors/floor2/temp/value"     # ← subscribe to this
+      mqtt_payload_format: json                           # raw | string | json | sparkplug_b
+      mqtt_value_path: "$.temperature"                    # JSONPath for value extraction
+      mqtt_timestamp_path: "$.ts"                         # optional: extract device timestamp
+      mqtt_qos: 1                                         # per-tag QoS override
+      data_type: float64
+    - id: humidity-1
+      name: Humidity
+      topic_suffix: humidity
+      mqtt_source_topic: "sensors/floor2/humidity/#"      # wildcards supported
+      mqtt_payload_format: raw                            # raw bytes → float
+      data_type: float64
+```
+
+**Per-tag subscription** (not per-device wildcard) because:
+1. Each tag may decode differently (`json` vs `raw` vs `sparkplug_b`)
+2. Topics may not share a common prefix
+3. QoS can vary per tag
+4. Granular unsubscribe when tags are removed
+
+**Wildcard support**: Tags can use `+` and `#` wildcards in `mqtt_source_topic`. The adapter matches incoming messages to tags by comparing the message topic against the subscribed pattern.
+
+##### Payload Decoding Pipeline
+
+```
+Incoming MQTT Message
+        │
+        ▼
+┌───────────────────┐
+│ Match to Tag      │  (by source topic → tag lookup map)
+│ (may match 1+ tags│   if wildcard subscription)
+└───────┬───────────┘
+        │
+        ▼
+┌───────────────────┐
+│ Decode Payload    │
+│                   │
+│ raw:         bytes → Go type via data_type (like Modbus parseValue)
+│ string:      UTF-8 string → strconv.ParseFloat / ParseBool / etc.
+│ json:        JSON unmarshal → JSONPath extract value + optional timestamp
+│ sparkplug_b: Protobuf decode → extract metric by name
+└───────┬───────────┘
+        │
+        ▼
+┌───────────────────┐
+│ Build DataPoint   │
+│                   │
+│ DeviceID, TagID, Value, Quality=good
+│ DeviceTimestamp = extracted or message timestamp
+│ GatewayTimestamp = now
+│ Topic = uns_prefix + "/" + topic_suffix
+└───────┬───────────┘
+        │
+        ▼
+┌───────────────────┐
+│ Deliver           │
+│                   │
+│ 1. Update last-value cache (for ReadTags)
+│ 2. Call dataHandler callback → MQTT publisher
+│ 3. Update staleness timer
+│ 4. Update metrics (messages received, decode errors)
+└───────────────────┘
+```
+
+##### Topic Loop Prevention
+
+When the source broker IS the same as the output broker (common in single-broker deployments), the gateway must not re-ingest its own published messages.
+
+**Three-layer protection:**
+1. **Client ID filtering**: The source client's `OnMessage` handler checks if the message originated from the gateway's publisher client ID (via MQTT v5 `$share` or client-id metadata). Not available in MQTT v3.1.1.
+2. **Topic prefix guard** (primary): Source topics and UNS output topics should use disjoint prefixes. Validation at config load: if `mqtt_source_topic` overlaps with `uns_prefix + "/" + topic_suffix`, reject with a config error.
+3. **Message tagging**: The publisher adds a user property `_gw=1` to all published messages. The source adapter drops any incoming message with this property. Works with MQTT v5; for v3.1.1, falls back to layer 2.
+
+##### No Polling / No Batching
+
+- **No polling needed**: Messages arrive via subscription callbacks. The `PollingService` checks `device.Protocol == ProtocolMQTT` and skips `startDevicePoller()`.
+- **No batch reads**: Unlike Modbus (where batching reduces round trips), MQTT messages arrive one-at-a-time. There's no equivalent of "read 100 registers in one request."
+- **Micro-batching output**: If a burst of messages arrives (e.g., 50 sensor readings in 100ms), the adapter could buffer and call `PublishBatch()` instead of `Publish()` for each. Optional optimization with configurable `batch_window` (e.g., 50ms). Default: immediate delivery (no batching).
+
+##### ConnectionConfig Additions
+
+New fields needed on `ConnectionConfig` for MQTT devices:
+
+```go
+// === MQTT Source Settings ===
+MQTTBrokerURL        string        // Source broker URL (tcp:// or ssl://)
+MQTTUsername          string        // Broker authentication
+MQTTPassword          string
+MQTTClientIDPrefix    string        // Client ID prefix (default: "gw-source")
+MQTTQOS               byte          // Default QoS for subscriptions (0, 1, 2)
+MQTTCleanSession      bool          // Clean session on connect
+MQTTStalenessTimeout  time.Duration // Mark device stale after no messages (0 = disabled)
+MQTTTLSEnabled        bool          // TLS for source broker
+MQTTTLSCAFile         string
+MQTTTLSCertFile       string
+MQTTTLSKeyFile        string
+```
+
+New fields on `Tag` for MQTT-sourced tags:
+
+```go
+MQTTSourceTopic   string // Topic to subscribe to (supports wildcards)
+MQTTPayloadFormat string // "raw" | "string" | "json" | "sparkplug_b"
+MQTTValuePath     string // JSONPath for value extraction (json format only)
+MQTTTimestampPath string // JSONPath for timestamp extraction (optional)
+```
+
+##### File Layout
+
+```
+internal/adapter/mqtt/
+├── publisher.go          # Existing — outbound publishing (unchanged)
+├── source_pool.go        # NEW — ProtocolPool implementation, broker client management
+├── source_client.go      # NEW — Per-broker MQTT client, subscription management
+├── decoder.go            # NEW — Payload decoding: raw, string, json, sparkplug_b
+├── source_types.go       # NEW — SourceConfig, TagMapping, last-value cache types
+└── source_health.go      # NEW — Staleness detection, per-device health, pool stats
+```
+
+##### Wiring (main.go)
+
+```go
+// After existing pool registrations:
+mqttSourcePool := mqtt.NewSourcePool(cfg.MQTTSource, logger, metricsRegistry, mqttPublisher)
+protocolManager.RegisterPool(domain.ProtocolMQTT, mqttSourcePool)
+// mqttSourcePool.Start() — begins subscribing for registered devices
+```
+
+##### Scope for v1 (Minimal)
+
+1. `source_pool.go` + `source_client.go` — broker sharing, subscription lifecycle
+2. `decoder.go` — `raw` and `json` formats only (sparkplug_b deferred)
+3. Topic loop prevention via prefix guard (layer 2)
+4. Staleness detection with `gateway_mqtt_source_device_stale` metric
+5. Last-value cache for `ReadTags` compatibility
+6. Wire into `main.go`
+
+**Deferred to v2:**
+- Sparkplug B decoding (requires protobuf dependency)
+- MQTT v5 message properties for loop prevention
+- Micro-batching output
+- Wildcard topic → multi-tag fan-out
+- MQTT source metrics dashboard (Grafana panel)
+
 ## Low — Nice to Have
 
-### 14. DataPoint Pool Usage in Production
+### 15. DataPoint Pool Usage in Production
 
 **Status**: `AcquireDataPoint()`/`ReleaseDataPoint()` exist with a `sync.Pool` in `domain/datapoint.go`. Only used in tests and benchmarks (`testing/unit/domain/datapoint_test.go`, `testing/benchmark/throughput/datapoint_test.go`, `testing/benchmark/concurrency/stress_test.go`). All production code uses `NewDataPoint()`.
 
@@ -179,13 +416,13 @@ These features are **already implemented** but never connected to the main appli
 
 ---
 
-### ~~15. `reorderBytes` Allocation Optimization~~ ✅ DONE
+### ~~16. `reorderBytes` Allocation Optimization~~ ✅ DONE
 
 **Resolved**: Rewrote `reorderBytes()` in `internal/adapter/modbus/conversion.go` to work entirely in-place with zero allocations. BigEndian is a no-op; LittleEndian does a full byte reverse; MidBigEndian swaps adjacent bytes; MidLitEndian swaps 2-byte halves of each 4-byte group. Eliminated the `make([]byte, len(data))` allocation from the hot path.
 
 ---
 
-### 16. OPC UA Event & Alarm Support
+### 17. OPC UA Event & Alarm Support
 
 **Status**: Not implemented. Full OPC UA Alarms & Conditions (A&C) is a large subsystem:
 - Event subscriptions (not just data changes)
@@ -196,24 +433,19 @@ Consider as a separate project phase.
 
 ---
 
-### 17. Clock Drift / NTP Sync Awareness
+### 18. Clock Drift / NTP Sync Awareness
 
 **Status**: Not implemented. DataPoint already tracks `DeviceTimestamp`, `GatewayTimestamp`, and `StalenessMs` — but there's no NTP sync check, clock drift estimation, or freshness window enforcement.
 
 ---
 
-### 18. S7 Per-Device/Tag Prometheus Metrics
+### ~~19. S7 Per-Device/Tag Prometheus Metrics~~ ✅ DONE
 
-**Status**: Modbus adapter has per-tag diagnostics (`TagDiagnostic` with success/error counts). S7 has the same structures but they're not exposed as Prometheus metrics.
-
-**What's needed**:
-- Gauge vector: `s7_device_connected{device_id}`
-- Counter vector: `s7_tag_errors_total{device_id, tag_id}`
-- Histogram: `s7_read_duration_seconds{device_id}`
+**Resolved**: Added five S7-specific metrics to `metrics.Registry`: `gateway_s7_device_connected` (gauge, 1/0 per device), `gateway_s7_tag_errors_total` (counter per device+tag), `gateway_s7_read_duration_seconds` (histogram per device), `gateway_s7_write_duration_seconds` (histogram per device), `gateway_s7_breaker_state` (gauge, 0=closed/1=half-open/2=open per device). Connection state and breaker state are published by the existing metrics loop (`publishActiveConnectionMetrics`). Read/write durations and tag errors are recorded at the pool level in `ReadTag`, `ReadTags`, `WriteTag`, and `WriteTags`.
 
 ---
 
-### 19. S7 Security Documentation
+### 20. S7 Security Documentation
 
 **Status**: S7 protocol has no native authentication (unlike OPC UA). Production deployments need:
 - Risk documentation for auth-less access

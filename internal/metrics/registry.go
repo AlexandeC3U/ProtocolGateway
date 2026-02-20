@@ -35,6 +35,13 @@ type Registry struct {
 	DevicesOnline     prometheus.Gauge
 	DeviceErrors      *prometheus.CounterVec
 
+	// S7-specific metrics
+	S7DeviceConnected  *prometheus.GaugeVec
+	S7TagErrorsTotal   *prometheus.CounterVec
+	S7ReadDuration     *prometheus.HistogramVec
+	S7WriteDuration    *prometheus.HistogramVec
+	S7BreakerState     *prometheus.GaugeVec
+
 	// System metrics
 	GoroutineCount prometheus.Gauge
 	MemoryUsage    prometheus.Gauge
@@ -168,6 +175,40 @@ func NewRegistry() *Registry {
 			Help:      "Total device errors by type",
 		}, []string{"device_id", "error_type"}),
 
+		// S7-specific metrics
+		S7DeviceConnected: promauto.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "gateway",
+			Subsystem: "s7",
+			Name:      "device_connected",
+			Help:      "Whether the S7 device is currently connected (1=connected, 0=disconnected)",
+		}, []string{"device_id"}),
+		S7TagErrorsTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "gateway",
+			Subsystem: "s7",
+			Name:      "tag_errors_total",
+			Help:      "Total S7 tag read/write errors by device and tag",
+		}, []string{"device_id", "tag_id"}),
+		S7ReadDuration: promauto.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "gateway",
+			Subsystem: "s7",
+			Name:      "read_duration_seconds",
+			Help:      "S7 read operation duration per device",
+			Buckets:   []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1},
+		}, []string{"device_id"}),
+		S7WriteDuration: promauto.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "gateway",
+			Subsystem: "s7",
+			Name:      "write_duration_seconds",
+			Help:      "S7 write operation duration per device",
+			Buckets:   []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1},
+		}, []string{"device_id"}),
+		S7BreakerState: promauto.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "gateway",
+			Subsystem: "s7",
+			Name:      "breaker_state",
+			Help:      "S7 circuit breaker state per device (0=closed, 1=half-open, 2=open)",
+		}, []string{"device_id"}),
+
 		// System metrics
 		GoroutineCount: promauto.NewGauge(prometheus.GaugeOpts{
 			Namespace: "gateway",
@@ -244,4 +285,34 @@ func (r *Registry) UpdateDeviceCount(registered, online int) {
 // UpdateActiveConnectionsForProtocol updates the active connection gauge for a specific protocol.
 func (r *Registry) UpdateActiveConnectionsForProtocol(protocol string, count int) {
 	r.ActiveConnectionsByProtocol.WithLabelValues(protocol).Set(float64(count))
+}
+
+// RecordS7DeviceConnected updates the S7 device connection state gauge.
+func (r *Registry) RecordS7DeviceConnected(deviceID string, connected bool) {
+	val := 0.0
+	if connected {
+		val = 1.0
+	}
+	r.S7DeviceConnected.WithLabelValues(deviceID).Set(val)
+}
+
+// RecordS7TagError increments the S7 tag error counter.
+func (r *Registry) RecordS7TagError(deviceID, tagID string) {
+	r.S7TagErrorsTotal.WithLabelValues(deviceID, tagID).Inc()
+}
+
+// RecordS7ReadDuration records an S7 read operation duration.
+func (r *Registry) RecordS7ReadDuration(deviceID string, duration float64) {
+	r.S7ReadDuration.WithLabelValues(deviceID).Observe(duration)
+}
+
+// RecordS7WriteDuration records an S7 write operation duration.
+func (r *Registry) RecordS7WriteDuration(deviceID string, duration float64) {
+	r.S7WriteDuration.WithLabelValues(deviceID).Observe(duration)
+}
+
+// RecordS7BreakerState updates the S7 circuit breaker state gauge.
+// 0=closed (normal), 1=half-open (probing), 2=open (blocking).
+func (r *Registry) RecordS7BreakerState(deviceID string, state int) {
+	r.S7BreakerState.WithLabelValues(deviceID).Set(float64(state))
 }

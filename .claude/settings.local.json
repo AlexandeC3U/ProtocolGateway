@@ -3,7 +3,8 @@
     "allow": [
       "Bash(go test:*)",
       "Bash(go build:*)",
-      "Bash(xargs cat:*)"
+      "Bash(xargs cat:*)",
+      "Bash(go vet:*)"
     ]
   }
 }

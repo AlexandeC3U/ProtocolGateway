@@ -136,14 +136,14 @@ Tests against real protocols (simulators or hardware).
 | **S7** | `connection_test.go` | S7comm connection, read/write, stats | S7 simulator | ✅ |
 | **S7** | `db_read_write_test.go` | Data block operations | S7 simulator | 📋 |
 | **S7** | `symbolic_test.go` | Symbolic addressing | S7 1200+ | 📋 |
-| **S7** | `error_handling_test.go` | Error responses | S7 simulator | 📋 |
+| **S7** | `error_handling_test.go` | Error responses, invalid addresses, type mismatches, disconnected ops, batch errors, stats tracking | S7 simulator | ✅ |
 | **MQTT** | `connection_test.go` | Broker connection | MQTT broker | ✅ |
 | **MQTT** | `publish_test.go` | Single/batch/concurrent publishing | MQTT broker | ✅ |
 | **MQTT** | `qos_test.go` | QoS levels | MQTT broker | 📋 |
-| **MQTT** | `reconnection_test.go` | Broker reconnection | MQTT broker | 📋 |
+| **MQTT** | `reconnection_test.go` | Reconnect lifecycle, multi-cycle, buffering during disconnect, buffer drain, stats accumulation, concurrent publish safety | MQTT broker | ✅ |
 | **MQTT** | `buffering_test.go` | Offline buffering | MQTT broker | 📋 |
 
-**Summary:** 12/20 implemented (60%)
+**Summary:** 14/20 implemented (70%)
 
 ### 3. Benchmark Tests (`testing/benchmark/`)
 
@@ -287,11 +287,11 @@ docker-compose -f docker-compose.test.yaml down
 | Category | Implemented | Total | Progress |
 |----------|-------------|-------|----------|
 | Unit Tests | 28 | 28 | 100% |
-| Integration Tests | 12 | 20 | 60% |
+| Integration Tests | 14 | 20 | 70% |
 | Benchmark Tests | 12 | 12 | 100% |
 | Fuzz Tests | 9 | 9 | 100% |
 | E2E Tests | 6 | 6 | 100% |
-| **Total** | **67** | **75** | **89%** |
+| **Total** | **69** | **75** | **92%** |
 
 ### Implemented Tests ✅
 
@@ -325,6 +325,8 @@ docker-compose -f docker-compose.test.yaml down
 | `testing/integration/modbus/` | `error_handling_test.go` | Exception responses, error recovery |
 | `testing/integration/opcua/` | `connection_test.go` | Secure channel, session, auth |
 | `testing/integration/opcua/` | `browse_test.go` | Node browsing, path traversal |
+| `testing/integration/s7/` | `error_handling_test.go` | Invalid addresses, type mismatches, write errors, context timeout, batch errors, stats tracking, disconnected ops |
+| `testing/integration/mqtt/` | `reconnection_test.go` | Reconnect lifecycle, multi-cycle, buffering during disconnect, buffer drain, stats accumulation, concurrent publish safety |
 | `testing/integration/mqtt/` | `connection_test.go` | Broker connection, reconnection |
 | `testing/benchmark/throughput/` | `datapoint_test.go` | Creation, pool, batch benchmarks |
 | `testing/benchmark/throughput/` | `protocol_read_throughput_test.go` | Protocol read throughput |
@@ -506,4 +508,4 @@ jobs:
 
 ---
 
-*Last updated: 2025-02-02*
+*Last updated: 2026-02-20*
