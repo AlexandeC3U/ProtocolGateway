@@ -213,6 +213,16 @@ bench-mqtt-latency:
 	@echo "Running MQTT latency benchmarks..."
 	$(GOTEST) -bench=BenchmarkMQTTLatency -benchmem -tags=benchmark ./testing/benchmark/latency/...
 
+# Run buffer growth benchmarks (ring buffer, growable buffer, pooled vs raw)
+bench-buffer-growth:
+	@echo "Running buffer growth benchmarks..."
+	$(GOTEST) -bench=BenchmarkBufferGrowth -benchmem -tags=benchmark ./testing/benchmark/memory/...
+
+# Run subscription stress benchmarks (create/destroy, fanout, backpressure)
+bench-subscription-stress:
+	@echo "Running subscription stress benchmarks..."
+	$(GOTEST) -bench=BenchmarkSubscription -benchmem -tags=benchmark ./testing/benchmark/concurrency/...
+
 # =============================================================================
 # Original Targets (continued)
 # =============================================================================
@@ -351,6 +361,8 @@ help:
 	@echo "  make bench-memory       - Run memory benchmarks"
 	@echo "  make bench-latency      - Run latency benchmarks"
 	@echo "  make bench-mqtt-latency - Run MQTT latency benchmarks"
+	@echo "  make bench-buffer-growth - Run buffer growth benchmarks"
+	@echo "  make bench-subscription-stress - Run subscription stress benchmarks"
 	@echo ""
 	@echo "Test Environment:"
 	@echo "  make test-env-up        - Start test simulators"

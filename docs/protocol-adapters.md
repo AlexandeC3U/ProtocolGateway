@@ -55,7 +55,7 @@ graph TD
 - **Max connections**: 500 default (configurable), suitable for 100–1000 devices
 - **Background goroutines**:
   - `healthCheckLoop()` — periodic health check with automatic reconnect on failure
-  - `idleReaperLoop()` — closes connections idle longer than `idle_timeout` (5 min default)
+  - `idleReaperLoop()` — closes connections idle longer than `idle_timeout` (5 min default) or exceeding `MaxTTL`
   - `publishActiveConnectionMetrics()` — updates Prometheus gauge
 
 > **What is a circuit breaker and why is it per-device?**
@@ -96,6 +96,15 @@ graph LR
 ```
 
 `buildContiguousRanges()` merges tags if the gap between addresses is ≤ 10 registers (configurable). This turns 8 individual Modbus reads into 3 batch reads — dramatically reducing round-trip overhead on slow networks.
+
+**Coil & Discrete Input batching:**
+
+Coils and discrete inputs use the same merge strategy via `buildCoilRanges()` with coil-specific tuning:
+- **MaxCoilsPerRead**: 1000 (protocol allows up to 2000)
+- **MaxGapSize**: 32 coils (only 4 bytes wasted per gap, since 8 coils pack into 1 byte)
+- Bit extraction: each coil is at `byteIndex = bitOffset / 8`, `bitIndex = bitOffset % 8`, LSB-first
+
+This means 100 scattered coils are read in 1-5 Modbus requests instead of 100 individual reads.
 
 **Protocol limit validation:**
 - Holding/input registers: max 125 per read (Modbus spec)
@@ -358,7 +367,12 @@ The client parses these addresses to determine the S7 area, DB number, byte offs
 - `rack` and `slot` identify the PLC within a Siemens rack system
 - Default PDU size: 480 bytes
 - Port: 102 (ISO-on-TCP standard)
-- `MaxMultiReadItems = 20` — max items per multi-read request
+- `MaxMultiReadItems = 20` — max items per `AGReadMulti` call
+- `MaxMultiWriteItems = 20` — max items per `AGWriteMulti` call
+
+**Batch writes (`WriteTags`):**
+
+`WriteTags()` aggregates multiple write operations into batched `AGWriteMulti` calls (up to 20 items per PDU). Boolean writes are excluded from batching because they require read-modify-write to preserve adjacent bits in the same byte — these are processed individually via `WriteTag()`. Per-item errors are tracked via `S7DataItem.Error` fields. At the pool level, the entire batch executes through a single circuit breaker call.
 
 ### Data Conversion (`conversion.go`)
 
@@ -432,6 +446,8 @@ Request → Circuit Breaker → {
 
 State transitions: Closed → (N consecutive failures) → Open → (timeout) → Half-Open → (success) → Closed
 
+**Per-device overrides:** Each device can optionally specify a `CircuitBreakerConfig` in its `ConnectionConfig` with fields: `MaxRequests`, `Interval`, `Timeout`, `FailureThreshold`, `FailureRatio`. Any zero-value field falls back to the pool default. This allows tuning breaker sensitivity per device — e.g., a flaky sensor might tolerate more failures before tripping.
+
 ### Pattern: Retry with Exponential Backoff + Jitter
 
 All adapters retry transient errors with:
@@ -458,8 +474,10 @@ graph TD
     Exists -->|No| Create
     Exists -->|Yes| Return
     HealthLoop -.->|"Reconnect on failure"| Create
-    IdleLoop -.->|"Close idle > timeout"| Return
+    IdleLoop -.->|"Close idle > timeout\nor TTL expired"| Return
 ```
+
+All three pools support a **MaxTTL** (connection time-to-live) that enforces a hard cap on connection age regardless of activity. The idle reaper checks both idle timeout AND MaxTTL expiry, closing connections that exceed either threshold. This prevents long-lived connections from accumulating stale state or leaking server resources.
 
 ### Pattern: Data Quality Signaling
 

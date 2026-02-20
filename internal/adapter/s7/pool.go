@@ -356,20 +356,39 @@ func (p *Pool) WriteTags(ctx context.Context, device *domain.Device, writes []Ta
 		p.mu.RUnlock()
 	}
 
-	errors := make([]error, len(writes))
-	for i, write := range writes {
-		_, err := entry.breaker.Execute(func() (interface{}, error) {
-			return nil, entry.client.WriteTag(ctx, write.Tag, write.Value)
-		})
-		if err != nil {
-			if err == gobreaker.ErrOpenState {
-				errors[i] = domain.ErrCircuitBreakerOpen
-			} else {
-				errors[i] = err
+	// Execute batch write through circuit breaker.
+	// We pass the first non-nil error to the breaker for state tracking,
+	// but always return the full per-item error slice to the caller.
+	result, err := entry.breaker.Execute(func() (interface{}, error) {
+		errs := entry.client.WriteTags(ctx, writes)
+		for _, e := range errs {
+			if e != nil {
+				return errs, e // Signal breaker with first error
 			}
 		}
+		return errs, nil
+	})
+
+	if err == gobreaker.ErrOpenState {
+		errors := make([]error, len(writes))
+		for i := range errors {
+			errors[i] = domain.ErrCircuitBreakerOpen
+		}
+		return errors
 	}
 
+	// Result contains the per-item error slice from WriteTags
+	if perItemErrs, ok := result.([]error); ok {
+		return perItemErrs
+	}
+
+	// Fallback: shouldn't happen, but return the breaker error for all items
+	errors := make([]error, len(writes))
+	if err != nil {
+		for i := range errors {
+			errors[i] = err
+		}
+	}
 	return errors
 }
 
@@ -377,6 +396,12 @@ func (p *Pool) WriteTags(ctx context.Context, device *domain.Device, writes []Ta
 type TagWrite struct {
 	Tag   *domain.Tag
 	Value interface{}
+}
+
+// indexedWrite pairs a TagWrite with its original index for batch error tracking.
+type indexedWrite struct {
+	origIndex int
+	write     TagWrite
 }
 
 // Remove removes a client from the pool and closes its connection.

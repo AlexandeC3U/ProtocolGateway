@@ -1032,9 +1032,11 @@ The Modbus adapter uses a per-device connection model with individual circuit br
 │  │  ┌───────────────────────────────────────────────────────────────────┐  │   │
 │  │  │                    Batch Optimization                             │  │   │
 │  │  │                                                                   │  │   │
-│  │  │  NOTE: Batch optimization applies to HOLDING and INPUT registers  │  │   │
-│  │  │  only. Coils and Discrete Inputs are read individually via        │  │   │
-│  │  │  readTagGroupIndividually() (bit-packed, no contiguous batching). │  │   │
+│  │  │  Batch optimization applies to ALL register types:                 │  │   │
+│  │  │  • Holding/Input registers: buildContiguousRanges() merges nearby │  │   │
+│  │  │    addresses (max gap = 10 registers, max 100 per read)           │  │   │
+│  │  │  • Coils/Discrete Inputs: buildCoilRanges() merges nearby bits   │  │   │
+│  │  │    (max gap = 32 coils, max 1000 per read, 8 coils/byte LSB)     │  │   │
 │  │  │                                                                   │  │   │
 │  │  │  Input Tags:  [R100, R101, R102, R103, R110, R111, R200]          │  │   │
 │  │  │                                                                   │  │   │
@@ -1393,6 +1395,22 @@ Unlike Modbus (which uses address-based contiguous range optimization), S7 uses 
 │  chunked in their original order. Future optimization could sort by            │
 │  memory area and offset to improve PLC read efficiency.                        │
 │                                                                                │
+│  ─────────────────────────────────────────────────────────────────────────────  │
+│                                                                                │
+│  BATCH WRITE STRATEGY (WriteTags)                                              │
+│                                                                                │
+│  Same chunking approach as reads: MaxMultiWriteItems = 20, AGWriteMulti()      │
+│                                                                                │
+│  Special handling for boolean writes:                                           │
+│  • Boolean values share bytes with adjacent bits (e.g., M0.0 and M0.1)        │
+│  • Writing a boolean requires read-modify-write (RMW) to preserve neighbors   │
+│  • Boolean writes are excluded from AGWriteMulti and processed individually    │
+│  • Non-boolean writes are batched normally (up to 20 per PDU)                  │
+│                                                                                │
+│  Per-item error tracking via S7DataItem.Error field allows partial success:    │
+│  items 1-19 may succeed while item 20 fails, and each error is reported       │
+│  back to the caller at its original index.                                     │
+│                                                                                │
 └────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -1579,6 +1597,11 @@ Idle connections consume server-side resources and may become stale. The backgro
 │  │    │                                                                 │  │   │
 │  │    │  if (now - lastUsed) > IdleTimeout:                             │  │   │
 │  │    │      mark for removal                                           │  │   │
+│  │    │                                                                 │  │   │
+│  │    │  Check 1b: Connection TTL (hard cap)                            │  │   │
+│  │    │                                                                 │  │   │
+│  │    │  if MaxTTL > 0 && (now - createdAt) > MaxTTL:                   │  │   │
+│  │    │      mark for removal (prevents stale long-lived connections)   │  │   │
 │  │    └─────────────────────────────────────────────────────────────────┘  │   │
 │  │                                                                         │   │
 │  │    ┌─────────────────────────────────────────────────────────────────┐  │   │
@@ -1980,6 +2003,17 @@ Circuit breakers prevent cascade failures by temporarily blocking requests to fa
 │  │  • Failure ratio: 0.5 (50%)                                             │   │
 │  │  • Timeout: 60 seconds                                                  │   │
 │  │  • Per-device breakers                                                  │   │
+│  └─────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                │
+│  ┌─────────────────────────────────────────────────────────────────────────┐   │
+│  │  PER-DEVICE CIRCUIT BREAKER OVERRIDES                                  │   │
+│  │                                                                         │   │
+│  │  Each device can optionally include a CircuitBreakerConfig in its       │   │
+│  │  ConnectionConfig with fields:                                          │   │
+│  │  • MaxRequests, Interval, Timeout, FailureThreshold, FailureRatio      │   │
+│  │                                                                         │   │
+│  │  Any zero-value field falls back to the pool default.                   │   │
+│  │  Applied in all three pools (Modbus, S7, OPC UA device-level).         │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                │
 │  Justification:                                                                │
@@ -3384,6 +3418,7 @@ mqtt:
 modbus:
   max_connections: 100                # Maximum concurrent connections
   idle_timeout: 5m                    # Idle connection timeout
+  max_ttl: 0                          # Connection TTL hard cap (0 = disabled)
   health_check_period: 30s            # Health check interval
   connection_timeout: 10s             # Connection timeout
   retry_attempts: 3                   # Max retry attempts
@@ -3393,6 +3428,7 @@ modbus:
 opcua:
   max_connections: 50                 # Maximum endpoint sessions
   idle_timeout: 5m                    # Idle session timeout
+  max_ttl: 0                          # Session TTL hard cap (0 = disabled)
   health_check_period: 30s            # Health check interval
   connection_timeout: 15s             # Connection timeout
   retry_attempts: 3                   # Max retry attempts
@@ -3408,6 +3444,7 @@ opcua:
 s7:
   max_connections: 100                # Maximum concurrent connections
   idle_timeout: 5m                    # Idle connection timeout
+  max_ttl: 0                          # Connection TTL hard cap (0 = disabled)
   health_check_period: 30s            # Health check interval
   connection_timeout: 10s             # Connection timeout
   retry_attempts: 3                   # Max retry attempts

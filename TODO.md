@@ -109,14 +109,9 @@ These features are **already implemented** but never connected to the main appli
 
 ---
 
-### 7. Modbus Coil/Discrete Input Batching
+### ~~7. Modbus Coil/Discrete Input Batching~~ ✅ DONE
 
-**Status**: Range-based batching (`buildContiguousRanges`) works for holding/input registers. Coils and discrete inputs fall through to `readTagGroupIndividually()` which reads them one by one (`client.go:426-429`).
-
-**What's needed**:
-- Bit-packed contiguous range batching for coils (8 coils per byte in Modbus response)
-- Similar `buildContiguousRanges()` algorithm adapted for bit addressing
-- Extract individual coil values from the packed byte response
+**Resolved**: Added `CoilBatchConfig` (max 1000 coils/read, gap merge ≤ 32), `buildCoilRanges()` for contiguous coil address merging, and `readCoilRange()` that reads a batch via `ReadCoils`/`ReadDiscreteInputs` and extracts individual tag values from the bit-packed response (8 coils per byte, LSB first). `readTagGroup()` now dispatches coils/discrete inputs to `readCoilGroupBatched()` instead of `readTagGroupIndividually()`. Reading 100 scattered coils now takes 1-5 Modbus requests instead of 100.
 
 ---
 
@@ -134,14 +129,9 @@ These features are **already implemented** but never connected to the main appli
 
 ---
 
-### 9. S7 Write Aggregation (Batch Writes)
+### ~~9. S7 Write Aggregation (Batch Writes)~~ ✅ DONE
 
-**Status**: `WriteTags()` in `s7/pool.go:306` loops per tag. gos7 supports `AGWriteMulti` for batched writes.
-
-**What's needed**:
-- Group writes by DB number
-- Build multi-item PDU with `AGWriteMulti`
-- Reduces round trips for bulk write scenarios
+**Resolved**: Added `MaxMultiWriteItems` constant (20) and `WriteTags()` batch method on `Client` that uses `AGWriteMulti` for non-boolean writes (up to 20 items per PDU). Boolean writes are excluded from batching because they require read-modify-write to preserve adjacent bits. Pool-level `WriteTags()` now executes the entire batch through the circuit breaker in a single call instead of per-tag. Per-item error tracking via `S7DataItem.Error` field.
 
 ---
 

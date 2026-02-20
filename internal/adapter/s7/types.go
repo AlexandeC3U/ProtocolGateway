@@ -115,6 +115,10 @@ const (
 // S7 protocol typically allows 20 items per PDU.
 const MaxMultiReadItems = 20
 
+// MaxMultiWriteItems is the maximum items per AGWriteMulti call.
+// S7 protocol typically allows 20 items per PDU.
+const MaxMultiWriteItems = 20
+
 // =============================================================================
 // Buffer Pool for Memory Efficiency
 // =============================================================================

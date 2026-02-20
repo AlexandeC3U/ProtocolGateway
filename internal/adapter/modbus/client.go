@@ -423,10 +423,10 @@ func (c *Client) readTagGroup(ctx context.Context, tags []*domain.Tag) ([]*domai
 		return nil, nil
 	}
 
-	// For coils/discrete inputs, batch differently (they're packed in bits)
+	// For coils/discrete inputs, use bit-packed contiguous range batching
 	if tags[0].RegisterType == domain.RegisterTypeCoil ||
 		tags[0].RegisterType == domain.RegisterTypeDiscreteInput {
-		return c.readTagGroupIndividually(ctx, tags)
+		return c.readCoilGroupBatched(ctx, tags)
 	}
 
 	// Build contiguous ranges for holding/input registers
@@ -526,6 +526,176 @@ func (c *Client) readRegisterRange(ctx context.Context, rng RegisterRange, regTy
 			results = append(results, c.createErrorDataPoint(tag, err))
 			continue
 		}
+
+		scaledValue := applyScaling(value, tag)
+		c.recordTagSuccess(tag.ID)
+
+		dp := domain.NewDataPoint(
+			c.deviceID,
+			tag.ID,
+			"",
+			scaledValue,
+			tag.Unit,
+			domain.QualityGood,
+		).WithRawValue(value).WithPriority(tag.Priority)
+
+		results = append(results, dp)
+	}
+
+	return results, nil
+}
+
+// CoilBatchConfig configures the coil/discrete input batching algorithm.
+type CoilBatchConfig struct {
+	// MaxCoilsPerRead is the maximum coils per single Modbus read (protocol limit: 2000)
+	MaxCoilsPerRead uint16
+	// MaxGapSize is the maximum gap between coil addresses to merge into one read
+	MaxGapSize uint16
+}
+
+// DefaultCoilBatchConfig returns sensible defaults for coil batching.
+func DefaultCoilBatchConfig() CoilBatchConfig {
+	return CoilBatchConfig{
+		MaxCoilsPerRead: 1000, // Conservative, well under 2000 limit
+		MaxGapSize:      32,   // Merge if gap <= 32 coils (only 4 extra bytes)
+	}
+}
+
+// readCoilGroupBatched reads coils/discrete inputs using contiguous range batching.
+// Coils are bit-packed in the Modbus response (8 coils per byte), so batching is
+// very efficient — reading 100 coils costs only 13 bytes vs 100 individual requests.
+func (c *Client) readCoilGroupBatched(ctx context.Context, tags []*domain.Tag) ([]*domain.DataPoint, error) {
+	if len(tags) == 0 {
+		return nil, nil
+	}
+
+	config := DefaultCoilBatchConfig()
+	ranges := c.buildCoilRanges(tags, config)
+
+	c.logger.Debug().
+		Int("tags", len(tags)).
+		Int("ranges", len(ranges)).
+		Msg("Batched coils/discrete inputs into ranges")
+
+	results := make([]*domain.DataPoint, 0, len(tags))
+
+	for _, rng := range ranges {
+		select {
+		case <-ctx.Done():
+			return results, ctx.Err()
+		default:
+		}
+
+		rangeResults, err := c.readCoilRange(ctx, rng, tags[0].RegisterType)
+		if err != nil {
+			c.logger.Warn().Err(err).
+				Uint16("start", rng.StartAddress).
+				Uint16("end", rng.EndAddress).
+				Msg("Failed to read coil range")
+			for _, tag := range rng.Tags {
+				results = append(results, c.createErrorDataPoint(tag, err))
+			}
+			continue
+		}
+		results = append(results, rangeResults...)
+	}
+
+	return results, nil
+}
+
+// buildCoilRanges groups coil/discrete input tags into contiguous address ranges.
+// Similar to buildContiguousRanges but uses bit addressing (1 coil = 1 bit).
+func (c *Client) buildCoilRanges(tags []*domain.Tag, config CoilBatchConfig) []RegisterRange {
+	if len(tags) == 0 {
+		return nil
+	}
+
+	sorted := make([]*domain.Tag, len(tags))
+	copy(sorted, tags)
+	sortTagsByAddress(sorted)
+
+	var ranges []RegisterRange
+	currentRange := RegisterRange{
+		StartAddress: sorted[0].Address,
+		EndAddress:   sorted[0].Address + sorted[0].RegisterCount - 1,
+		Tags:         []*domain.Tag{sorted[0]},
+	}
+
+	for i := 1; i < len(sorted); i++ {
+		tag := sorted[i]
+		tagEnd := tag.Address + tag.RegisterCount - 1
+
+		gap := int(tag.Address) - int(currentRange.EndAddress) - 1
+		newRangeSize := tagEnd - currentRange.StartAddress + 1
+
+		if gap <= int(config.MaxGapSize) && newRangeSize <= config.MaxCoilsPerRead {
+			if tagEnd > currentRange.EndAddress {
+				currentRange.EndAddress = tagEnd
+			}
+			currentRange.Tags = append(currentRange.Tags, tag)
+		} else {
+			ranges = append(ranges, currentRange)
+			currentRange = RegisterRange{
+				StartAddress: tag.Address,
+				EndAddress:   tagEnd,
+				Tags:         []*domain.Tag{tag},
+			}
+		}
+	}
+	ranges = append(ranges, currentRange)
+
+	return ranges
+}
+
+// readCoilRange reads a contiguous range of coils/discrete inputs and extracts
+// individual tag values from the bit-packed response.
+// Modbus packs 8 coils per byte, LSB first (coil 0 = bit 0 of byte 0).
+func (c *Client) readCoilRange(ctx context.Context, rng RegisterRange, regType domain.RegisterType) ([]*domain.DataPoint, error) {
+	coilCount := rng.EndAddress - rng.StartAddress + 1
+
+	c.mu.RLock()
+	client := c.client
+	c.mu.RUnlock()
+
+	if client == nil {
+		return nil, domain.ErrConnectionClosed
+	}
+
+	c.opMu.Lock()
+	var rawData []byte
+	var err error
+	switch regType {
+	case domain.RegisterTypeCoil:
+		rawData, err = client.ReadCoils(rng.StartAddress, coilCount)
+	case domain.RegisterTypeDiscreteInput:
+		rawData, err = client.ReadDiscreteInputs(rng.StartAddress, coilCount)
+	default:
+		c.opMu.Unlock()
+		return nil, domain.ErrInvalidRegisterType
+	}
+	c.opMu.Unlock()
+
+	if err != nil {
+		c.consecutiveFailures.Add(1)
+		return nil, c.translateModbusError(err)
+	}
+	c.consecutiveFailures.Store(0)
+	c.stats.ReadCount.Add(1)
+
+	// Extract individual tag values from bit-packed data
+	results := make([]*domain.DataPoint, 0, len(rng.Tags))
+	for _, tag := range rng.Tags {
+		bitOffset := int(tag.Address - rng.StartAddress)
+		byteIndex := bitOffset / 8
+		bitIndex := uint(bitOffset % 8)
+
+		if byteIndex >= len(rawData) {
+			c.recordTagError(tag.ID, domain.ErrInvalidDataLength)
+			results = append(results, c.createErrorDataPoint(tag, domain.ErrInvalidDataLength))
+			continue
+		}
+
+		value := (rawData[byteIndex] & (1 << bitIndex)) != 0
 
 		scaledValue := applyScaling(value, tag)
 		c.recordTagSuccess(tag.ID)

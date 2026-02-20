@@ -46,8 +46,8 @@ testing/
 ├── benchmark/                 # Performance tests
 │   ├── throughput/            # ✅ datapoint_test.go, protocol_read_throughput_test.go, mqtt_publish_throughput_test.go
 │   ├── latency/               # ✅ read_latency_test.go, write_latency_test.go
-│   ├── memory/                # ✅ datapoint_alloc_test.go, pool_efficiency_test.go
-│   └── concurrency/           # ✅ stress_test.go, pool_contention_test.go
+│   ├── memory/                # ✅ datapoint_alloc_test.go, pool_efficiency_test.go, buffer_growth_test.go
+│   └── concurrency/           # ✅ stress_test.go, pool_contention_test.go, subscription_stress_test.go
 
 ├── fuzz/                      # Fuzz testing
 │   ├── conversion/            # ✅ modbus_conversion_fuzz_test.go, scaling_fuzz_test.go, opcua_variant_fuzz_test.go, s7_type_fuzz_test.go
@@ -159,12 +159,12 @@ Performance measurement and regression detection.
 | **Latency** | `mqtt_latency_test.go` | Publish latency | ✅ |
 | **Memory** | `datapoint_alloc_test.go` | Bytes/op, allocs/op | ✅ |
 | **Memory** | `pool_efficiency_test.go` | Pool hit rate | ✅ |
-| **Memory** | `buffer_growth_test.go` | Buffer memory under load | 📋 |
+| **Memory** | `buffer_growth_test.go` | Buffer growth, burst recovery, drop rate, pooled vs raw | ✅ |
 | **Concurrency** | `stress_test.go` | Parallel ops, race detection | ✅ |
 | **Concurrency** | `pool_contention_test.go` | Lock contention | ✅ |
-| **Concurrency** | `subscription_stress_test.go` | Many subscriptions | 📋 |
+| **Concurrency** | `subscription_stress_test.go` | Subscription churn, fanout scaling, backpressure | ✅ |
 
-**Summary:** 10/12 implemented (83%)
+**Summary:** 12/12 implemented (100%)
 
 ### 4. Fuzz Tests (`testing/fuzz/`)
 
@@ -288,10 +288,10 @@ docker-compose -f docker-compose.test.yaml down
 |----------|-------------|-------|----------|
 | Unit Tests | 28 | 28 | 100% |
 | Integration Tests | 12 | 20 | 60% |
-| Benchmark Tests | 10 | 12 | 83% |
+| Benchmark Tests | 12 | 12 | 100% |
 | Fuzz Tests | 9 | 9 | 100% |
 | E2E Tests | 6 | 6 | 100% |
-| **Total** | **65** | **75** | **87%** |
+| **Total** | **67** | **75** | **89%** |
 
 ### Implemented Tests ✅
 
@@ -335,6 +335,8 @@ docker-compose -f docker-compose.test.yaml down
 | `testing/benchmark/memory/` | `pool_efficiency_test.go` | Pool hit rate, efficiency |
 | `testing/benchmark/concurrency/` | `stress_test.go` | Parallel creation, pool contention |
 | `testing/benchmark/concurrency/` | `pool_contention_test.go` | Lock contention benchmarks |
+| `testing/benchmark/memory/` | `buffer_growth_test.go` | Buffer growth, burst recovery, drop rate, pooled vs raw |
+| `testing/benchmark/concurrency/` | `subscription_stress_test.go` | Subscription churn, fanout scaling, backpressure |
 | `testing/fuzz/conversion/` | `modbus_conversion_fuzz_test.go` | Byte order, parsing fuzz tests |
 | `testing/fuzz/conversion/` | `scaling_fuzz_test.go` | Linear/reverse scaling fuzz tests |
 | `testing/fuzz/conversion/` | `opcua_variant_fuzz_test.go` | OPC UA variant type fuzzing |

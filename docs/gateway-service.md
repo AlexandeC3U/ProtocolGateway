@@ -271,7 +271,7 @@ All routes are registered in `cmd/gateway/main.go` and handled by `internal/api/
 | POST | `/api/devices` | Yes* | Create new device (registers with polling service) |
 | PUT | `/api/devices` | Yes* | Update device (unregister + re-register) |
 | DELETE | `/api/devices` | Yes* | Delete device (unregisters from polling service) |
-| POST | `/api/test-connection` | Yes* | Test connection to a device |
+| POST | `/api/test-connection` | Yes* | Test live connection to a device (performs a real `ReadTag` against the device's first tag via the protocol pool, with configurable timeout falling back to 10s; returns elapsed time, protocol, and error details on failure with HTTP 503) |
 | GET | `/api/topics` | No | Active MQTT topics and configured routes |
 | GET | `/api/logs/containers` | No | List running Docker containers |
 | GET | `/api/logs` | No | Tail logs from a container |

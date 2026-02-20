@@ -483,6 +483,188 @@ func (c *Client) WriteTag(ctx context.Context, tag *domain.Tag, value interface{
 	return nil
 }
 
+// WriteTags writes multiple tags using AGWriteMulti for batch writes.
+// Boolean writes are excluded from batching (they require read-modify-write)
+// and are handled individually after the batch.
+func (c *Client) WriteTags(ctx context.Context, writes []TagWrite) []error {
+	if len(writes) == 0 {
+		return nil
+	}
+
+	c.mu.Lock()
+	c.lastUsed = time.Now()
+	c.mu.Unlock()
+
+	if !c.connected.Load() {
+		errs := make([]error, len(writes))
+		for i := range errs {
+			errs[i] = domain.ErrConnectionClosed
+		}
+		return errs
+	}
+
+	errs := make([]error, len(writes))
+
+	// Separate boolean writes (need RMW) from non-boolean writes (can batch)
+	var batchable []indexedWrite
+	var boolWrites []indexedWrite
+
+	for i, w := range writes {
+		if !c.isTagWritable(w.Tag) {
+			errs[i] = fmt.Errorf("%w: tag %s", domain.ErrTagNotWritable, w.Tag.ID)
+			continue
+		}
+		if w.Tag.DataType == domain.DataTypeBool {
+			boolWrites = append(boolWrites, indexedWrite{origIndex: i, write: w})
+		} else {
+			batchable = append(batchable, indexedWrite{origIndex: i, write: w})
+		}
+	}
+
+	// Process batchable writes in chunks of MaxMultiWriteItems
+	for i := 0; i < len(batchable); i += MaxMultiWriteItems {
+		end := i + MaxMultiWriteItems
+		if end > len(batchable) {
+			end = len(batchable)
+		}
+		chunk := batchable[i:end]
+
+		select {
+		case <-ctx.Done():
+			for _, iw := range batchable[i:] {
+				errs[iw.origIndex] = ctx.Err()
+			}
+			for _, iw := range boolWrites {
+				if errs[iw.origIndex] == nil {
+					errs[iw.origIndex] = ctx.Err()
+				}
+			}
+			return errs
+		default:
+		}
+
+		batchErrs := c.writeTagBatch(ctx, chunk)
+		for j, bErr := range batchErrs {
+			errs[chunk[j].origIndex] = bErr
+		}
+	}
+
+	// Process boolean writes individually (read-modify-write)
+	for _, iw := range boolWrites {
+		select {
+		case <-ctx.Done():
+			errs[iw.origIndex] = ctx.Err()
+			continue
+		default:
+		}
+		errs[iw.origIndex] = c.WriteTag(ctx, iw.write.Tag, iw.write.Value)
+	}
+
+	return errs
+}
+
+// writeTagBatch performs a multi-write operation using AGWriteMulti.
+func (c *Client) writeTagBatch(ctx context.Context, writes []indexedWrite) []error {
+	errs := make([]error, len(writes))
+	if len(writes) == 0 {
+		return errs
+	}
+
+	// Prepare S7DataItems for each write
+	dataItems := make([]gos7.S7DataItem, 0, len(writes))
+	buffers := make([][]byte, 0, len(writes)) // track buffers to return to pool
+	validIndices := make([]int, 0, len(writes))
+
+	defer func() {
+		for _, buf := range buffers {
+			BufferPool.Put(buf)
+		}
+	}()
+
+	for i, iw := range writes {
+		area, dbNumber, offset, bitOffset, err := c.parseTagAddress(iw.write.Tag)
+		if err != nil {
+			errs[i] = fmt.Errorf("failed to parse address for tag %s: %w", iw.write.Tag.ID, err)
+			continue
+		}
+
+		areaCode, ok := S7AreaCode[area]
+		if !ok {
+			errs[i] = fmt.Errorf("%w: %s for tag %s", domain.ErrS7InvalidArea, area, iw.write.Tag.ID)
+			continue
+		}
+
+		buffer, err := c.valueToBytes(iw.write.Value, iw.write.Tag, bitOffset)
+		if err != nil {
+			errs[i] = fmt.Errorf("failed to convert value for tag %s: %w", iw.write.Tag.ID, err)
+			continue
+		}
+		buffers = append(buffers, buffer)
+
+		wordLen := c.getWordLength(iw.write.Tag.DataType)
+
+		dataItems = append(dataItems, gos7.S7DataItem{
+			Area:     areaCode,
+			WordLen:  wordLen,
+			DBNumber: dbNumber,
+			Start:    offset,
+			Bit:      bitOffset,
+			Amount:   len(buffer),
+			Data:     buffer,
+		})
+		validIndices = append(validIndices, i)
+	}
+
+	if len(dataItems) == 0 {
+		return errs
+	}
+
+	// Serialize S7 operations
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+
+	c.mu.RLock()
+	client := c.client
+	c.mu.RUnlock()
+
+	if client == nil {
+		for _, vi := range validIndices {
+			errs[vi] = domain.ErrConnectionClosed
+		}
+		return errs
+	}
+
+	startTime := time.Now()
+	err := client.AGWriteMulti(dataItems, len(dataItems))
+	elapsed := time.Since(startTime)
+	c.stats.TotalWriteTime.Add(elapsed.Nanoseconds())
+
+	if err != nil {
+		// Batch-level failure — attribute to all items
+		for _, vi := range validIndices {
+			errs[vi] = fmt.Errorf("%w: AGWriteMulti failed: %v", domain.ErrS7WriteFailed, err)
+			c.stats.ErrorCount.Add(1)
+		}
+		return errs
+	}
+
+	// Check per-item errors
+	for j, item := range dataItems {
+		vi := validIndices[j]
+		if item.Error != "" {
+			errs[vi] = fmt.Errorf("%w: %s", domain.ErrS7WriteFailed, item.Error)
+			c.stats.ErrorCount.Add(1)
+			c.recordTagError(writes[vi].write.Tag.ID, errs[vi])
+		} else {
+			c.stats.WriteCount.Add(1)
+			c.consecutiveFailures.Store(0)
+			c.recordTagSuccess(writes[vi].write.Tag.ID)
+		}
+	}
+
+	return errs
+}
+
 // readData performs the actual S7 read operation.
 // Uses opMu to serialize operations - gos7 client is NOT thread-safe.
 func (c *Client) readData(tag *domain.Tag, area domain.S7Area, dbNumber, offset, bitOffset int) (*domain.DataPoint, error) {
