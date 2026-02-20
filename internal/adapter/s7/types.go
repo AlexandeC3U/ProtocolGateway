@@ -19,6 +19,7 @@ import (
 // Client represents an S7 client connection to a single PLC.
 type Client struct {
 	config              ClientConfig
+	batchConfig         S7BatchConfig
 	handler             *gos7.TCPClientHandler
 	client              gos7.Client
 	logger              zerolog.Logger

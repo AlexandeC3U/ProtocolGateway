@@ -56,22 +56,38 @@ type Publisher interface {
 	PublishBatch(ctx context.Context, dataPoints []*domain.DataPoint) error
 }
 
+// SubscriptionHandler handles push-based data delivery for protocols that
+// support server-side subscriptions (e.g., OPC UA Report-by-Exception).
+// When a device is configured for subscriptions, the polling service delegates
+// to this handler instead of running a polling loop.
+type SubscriptionHandler interface {
+	// Subscribe sets up server-side subscriptions for a device's tags.
+	// The onData callback is invoked for each data point pushed by the server.
+	Subscribe(ctx context.Context, device *domain.Device, tags []*domain.Tag, onData func(*domain.DataPoint)) error
+
+	// Unsubscribe removes all subscriptions for a device.
+	Unsubscribe(deviceID string) error
+}
+
 // PollingService orchestrates reading data from devices and publishing to MQTT.
 // It supports multiple protocols through the ProtocolManager.
+// For OPC UA devices with OPCUseSubscriptions=true, it delegates to a
+// SubscriptionHandler for push-based data delivery instead of polling.
 type PollingService struct {
-	config          PollingConfig
-	protocolManager *domain.ProtocolManager
-	publisher       Publisher
-	logger          zerolog.Logger
-	metrics         *metrics.Registry
-	devices         map[string]*devicePoller
-	mu              sync.RWMutex
-	started         atomic.Bool
-	ctx             context.Context
-	cancel          context.CancelFunc
-	wg              sync.WaitGroup
-	workerPool      chan struct{}
-	stats           *PollingStats
+	config              PollingConfig
+	protocolManager     *domain.ProtocolManager
+	publisher           Publisher
+	subscriptionHandler SubscriptionHandler // Optional: handles OPC UA subscriptions
+	logger              zerolog.Logger
+	metrics             *metrics.Registry
+	devices             map[string]*devicePoller
+	mu                  sync.RWMutex
+	started             atomic.Bool
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	wg                  sync.WaitGroup
+	workerPool          chan struct{}
+	stats               *PollingStats
 }
 
 // PollingConfig holds configuration for the polling service.
@@ -95,14 +111,15 @@ type PollingStats struct {
 
 // devicePoller manages polling for a single device.
 type devicePoller struct {
-	device    *domain.Device
-	stopChan  chan struct{}
-	stopOnce  sync.Once
-	running   atomic.Bool
-	lastPoll  time.Time
-	lastError error
-	stats     deviceStats
-	mu        sync.RWMutex
+	device     *domain.Device
+	stopChan   chan struct{}
+	stopOnce   sync.Once
+	running    atomic.Bool
+	subscribed bool // true if using push-based subscriptions instead of polling
+	lastPoll   time.Time
+	lastError  error
+	stats      deviceStats
+	mu         sync.RWMutex
 }
 
 // deviceStats tracks per-device statistics.
@@ -145,6 +162,13 @@ func NewPollingService(
 		workerPool:      make(chan struct{}, config.WorkerCount),
 		stats:           &PollingStats{},
 	}
+}
+
+// SetSubscriptionHandler sets the handler for push-based subscriptions.
+// Must be called before Start(). Devices with OPCUseSubscriptions=true
+// will use this handler instead of polling.
+func (s *PollingService) SetSubscriptionHandler(handler SubscriptionHandler) {
+	s.subscriptionHandler = handler
 }
 
 // Start begins the polling service.
@@ -250,6 +274,14 @@ func (s *PollingService) UnregisterDevice(deviceID string) error {
 		return domain.ErrDeviceNotFound
 	}
 
+	// If device was using subscriptions, unsubscribe
+	if dp.subscribed && s.subscriptionHandler != nil {
+		if err := s.subscriptionHandler.Unsubscribe(deviceID); err != nil {
+			s.logger.Warn().Err(err).Str("device_id", deviceID).Msg("Failed to unsubscribe device")
+		}
+		dp.subscribed = false
+	}
+
 	// Stop the poller
 	if dp.running.Load() {
 		dp.stopOnce.Do(func() {
@@ -283,6 +315,10 @@ func (s *PollingService) ReplaceDevice(ctx context.Context, device *domain.Devic
 
 	if !device.Enabled {
 		// Device disabled — unregister it.
+		if dp.subscribed && s.subscriptionHandler != nil {
+			_ = s.subscriptionHandler.Unsubscribe(device.ID)
+			dp.subscribed = false
+		}
 		if dp.running.Load() {
 			dp.stopOnce.Do(func() {
 				close(dp.stopChan)
@@ -294,6 +330,8 @@ func (s *PollingService) ReplaceDevice(ctx context.Context, device *domain.Devic
 	}
 
 	oldInterval := dp.device.PollInterval
+	wasSubscribed := dp.subscribed
+	wantsSubscription := device.Connection.OPCUseSubscriptions && device.Protocol == domain.ProtocolOPCUA && s.subscriptionHandler != nil
 
 	// Swap the device pointer. The next pollDevice() call reads from dp.device,
 	// so it will automatically use the new tags, connection config, etc.
@@ -306,6 +344,43 @@ func (s *PollingService) ReplaceDevice(ctx context.Context, device *domain.Devic
 		Int("tags", len(device.Tags)).
 		Dur("poll_interval", device.PollInterval).
 		Msg("Replaced device configuration (stats preserved)")
+
+	// Handle mode change: subscription ↔ polling
+	if wasSubscribed && !wantsSubscription {
+		// Switching from subscription to polling
+		if s.subscriptionHandler != nil {
+			_ = s.subscriptionHandler.Unsubscribe(device.ID)
+		}
+		dp.subscribed = false
+		dp.stopChan = make(chan struct{})
+		dp.stopOnce = sync.Once{}
+		dp.running.Store(false)
+		s.startDevicePoller(dp)
+		return nil
+	}
+	if !wasSubscribed && wantsSubscription {
+		// Switching from polling to subscription
+		if dp.running.Load() {
+			dp.stopOnce.Do(func() {
+				close(dp.stopChan)
+			})
+		}
+		dp.running.Store(false)
+		dp.stopChan = make(chan struct{})
+		dp.stopOnce = sync.Once{}
+		s.startDevicePoller(dp) // Will detect OPCUseSubscriptions and delegate
+		return nil
+	}
+	if wasSubscribed && wantsSubscription {
+		// Still subscription mode — re-subscribe with new tags
+		if s.subscriptionHandler != nil {
+			_ = s.subscriptionHandler.Unsubscribe(device.ID)
+		}
+		dp.subscribed = false
+		dp.running.Store(false)
+		s.startDevicePoller(dp) // Will delegate to startDeviceSubscription
+		return nil
+	}
 
 	// If the poll interval changed, we need to restart the poller goroutine
 	// because the ticker was created with the old interval.
@@ -334,9 +409,17 @@ func (s *PollingService) ReplaceDevice(ctx context.Context, device *domain.Devic
 }
 
 // startDevicePoller starts the polling loop for a device.
+// For OPC UA devices with subscriptions enabled, it delegates to the
+// subscription handler for push-based data delivery instead of polling.
 // Adds jitter to poll intervals to prevent synchronized bursts across devices.
 func (s *PollingService) startDevicePoller(dp *devicePoller) {
 	if dp.running.Load() {
+		return
+	}
+
+	// Check if this device should use subscriptions instead of polling
+	if dp.device.Connection.OPCUseSubscriptions && dp.device.Protocol == domain.ProtocolOPCUA && s.subscriptionHandler != nil {
+		s.startDeviceSubscription(dp)
 		return
 	}
 
@@ -377,6 +460,59 @@ func (s *PollingService) startDevicePoller(dp *devicePoller) {
 			}
 		}
 	}()
+}
+
+// startDeviceSubscription sets up push-based subscriptions for an OPC UA device.
+// The subscription handler receives data changes from the server and publishes
+// them to MQTT via the onData callback — no polling loop is needed.
+func (s *PollingService) startDeviceSubscription(dp *devicePoller) {
+	tags := s.getEnabledTags(dp.device)
+	if len(tags) == 0 {
+		s.logger.Warn().Str("device_id", dp.device.ID).Msg("No enabled tags for subscription")
+		return
+	}
+
+	// The onData callback publishes each data point to MQTT.
+	// Topic is already set by the subscription manager.
+	onData := func(dataPoint *domain.DataPoint) {
+		s.stats.PointsRead.Add(1)
+		dp.stats.pointsRead.Add(1)
+
+		if dataPoint.Quality == domain.QualityGood {
+			if err := s.publisher.Publish(s.ctx, dataPoint); err != nil {
+				s.logger.Warn().
+					Err(err).
+					Str("device_id", dp.device.ID).
+					Str("tag_id", dataPoint.TagID).
+					Msg("Failed to publish subscription data point")
+			} else {
+				s.stats.PointsPublished.Add(1)
+			}
+		}
+	}
+
+	err := s.subscriptionHandler.Subscribe(s.ctx, dp.device, tags, onData)
+	if err != nil {
+		s.logger.Error().
+			Err(err).
+			Str("device_id", dp.device.ID).
+			Int("tags", len(tags)).
+			Msg("Failed to set up subscriptions, falling back to polling")
+
+		// Fallback to polling on subscription failure
+		dp.subscribed = false
+		dp.running.Store(false)
+		s.startDevicePoller(dp)
+		return
+	}
+
+	dp.subscribed = true
+	dp.running.Store(true)
+
+	s.logger.Info().
+		Str("device_id", dp.device.ID).
+		Int("tags", len(tags)).
+		Msg("Device using OPC UA subscriptions (push mode)")
 }
 
 // pollDevice performs a single poll cycle for a device.

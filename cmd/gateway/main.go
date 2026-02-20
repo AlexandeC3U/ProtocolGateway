@@ -130,6 +130,11 @@ func main() {
 	protocolManager.RegisterPool(domain.ProtocolOPCUA, opcuaPool)
 	logger.Info().Msg("OPC UA connection pool initialized")
 
+	// Create OPC UA subscription adapter for push-based data delivery.
+	// This wraps the pool's SubscribeDevice/UnsubscribeDevice methods
+	// behind the service.SubscriptionHandler interface.
+	opcuaSubAdapter := &opcuaSubscriptionAdapter{pool: opcuaPool}
+
 	// Initialize S7 connection pool
 	s7Pool := s7.NewPool(s7.PoolConfig{
 		MaxConnections:      cfg.S7.MaxConnections,
@@ -161,6 +166,11 @@ func main() {
 		MaxRetries:      cfg.Polling.MaxRetries,
 		ShutdownTimeout: cfg.Polling.ShutdownTimeout,
 	}, protocolManager, mqttPublisher, logger, metricsRegistry)
+
+	// Wire OPC UA subscription handler for push-based data delivery.
+	// Devices with opc_use_subscriptions=true will use server-side subscriptions
+	// instead of polling, receiving data via Report-by-Exception.
+	pollingSvc.SetSubscriptionHandler(opcuaSubAdapter)
 
 	// Initialize device manager for web UI
 	deviceManager := api.NewDeviceManager(cfg.DevicesConfigPath, logger)
@@ -433,4 +443,18 @@ func main() {
 
 	// Close protocol pools (handled by defer)
 	logger.Info().Msg("Protocol Gateway shutdown complete")
+}
+
+// opcuaSubscriptionAdapter adapts the OPC UA ConnectionPool's subscription
+// methods to the service.SubscriptionHandler interface.
+type opcuaSubscriptionAdapter struct {
+	pool *opcua.ConnectionPool
+}
+
+func (a *opcuaSubscriptionAdapter) Subscribe(ctx context.Context, device *domain.Device, tags []*domain.Tag, onData func(*domain.DataPoint)) error {
+	return a.pool.SubscribeDevice(ctx, device, tags, onData)
+}
+
+func (a *opcuaSubscriptionAdapter) Unsubscribe(deviceID string) error {
+	return a.pool.UnsubscribeDevice(deviceID)
 }

@@ -568,6 +568,93 @@ func (p *ConnectionPool) recoverSubscriptions(session *pooledSession) {
 }
 
 // =============================================================================
+// Subscription Management
+// =============================================================================
+
+// SubscribeDevice sets up OPC UA subscriptions for a device's tags.
+// The onData callback is invoked for each data point pushed by the server.
+// Uses the session's shared SubscriptionManager (created lazily on first call).
+func (p *ConnectionPool) SubscribeDevice(ctx context.Context, device *domain.Device, tags []*domain.Tag, onData DataHandler) error {
+	// Ensure we have a connected client for this device
+	_, err := p.GetClient(ctx, device)
+	if err != nil {
+		return fmt.Errorf("failed to get client for subscription: %w", err)
+	}
+
+	session, exists := p.getSessionForDevice(device.ID)
+	if !exists {
+		return domain.ErrDeviceNotFound
+	}
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	// Create subscription manager for this session if it doesn't exist
+	if session.subscriptionMgr == nil {
+		mgr, err := NewSubscriptionManager(session.client, onData, p.logger)
+		if err != nil {
+			return fmt.Errorf("failed to create subscription manager: %w", err)
+		}
+		if err := mgr.Start(); err != nil {
+			return fmt.Errorf("failed to start subscription manager: %w", err)
+		}
+		session.subscriptionMgr = mgr
+	}
+
+	// Build subscription config from device settings
+	config := DefaultSubscriptionConfig()
+	if device.Connection.OPCPublishInterval > 0 {
+		config.PublishInterval = device.Connection.OPCPublishInterval
+	}
+	if device.Connection.OPCSamplingInterval > 0 {
+		config.SamplingInterval = device.Connection.OPCSamplingInterval
+	}
+
+	// Subscribe the device
+	if err := session.subscriptionMgr.Subscribe(device, tags, config); err != nil {
+		return err
+	}
+
+	session.hasActiveSubscriptions = true
+	session.recordPublishActivity()
+
+	p.logger.Info().
+		Str("device_id", device.ID).
+		Int("tags", len(tags)).
+		Dur("publish_interval", config.PublishInterval).
+		Msg("Device subscribed via OPC UA push mode")
+
+	return nil
+}
+
+// UnsubscribeDevice removes all OPC UA subscriptions for a device.
+func (p *ConnectionPool) UnsubscribeDevice(deviceID string) error {
+	session, exists := p.getSessionForDevice(deviceID)
+	if !exists {
+		return domain.ErrDeviceNotFound
+	}
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	if session.subscriptionMgr == nil {
+		return nil
+	}
+
+	if err := session.subscriptionMgr.Unsubscribe(deviceID); err != nil {
+		p.logger.Warn().Err(err).Str("device_id", deviceID).Msg("Error unsubscribing device")
+		return err
+	}
+
+	// Check if any subscriptions remain on this session
+	stats := session.subscriptionMgr.Stats()
+	session.hasActiveSubscriptions = stats.ActiveSubscriptions > 0
+
+	p.logger.Info().Str("device_id", deviceID).Msg("Device unsubscribed from OPC UA push mode")
+	return nil
+}
+
+// =============================================================================
 // Read/Write Operations
 // =============================================================================
 

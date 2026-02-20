@@ -10,33 +10,18 @@ Items are organized by priority. Each item notes what exists today vs what's mis
 
 These features are **already implemented** but never connected to the main application.
 
-### 1. Wire OPC UA Subscriptions into the Polling Path
+### ~~1. Wire OPC UA Subscriptions into the Polling Path~~ ✅ DONE
 
-**Status**: `subscription.go` is **complete** (SubscriptionManager, monitored items, deadband filtering, notification handling, recovery state). But `main.go` never instantiates it and `polling.go` never uses it. All OPC UA devices currently use synchronous polling.
+**Resolved**: Wired OPC UA subscriptions into the polling/publishing path:
 
-**What exists** (`internal/adapter/opcua/subscription.go`):
-- Full SubscriptionManager with Start/Stop lifecycle
-- Subscribe/Unsubscribe per device
-- Deadband filtering (absolute, percent)
-- Notification channel for async data delivery
-- Per-tag last-value caching
-- Subscription recovery after reconnect (republish + monitored item rebind)
+1. **`SubscriptionHandler` interface** (`service/polling.go`): Generic push-based data delivery interface (`Subscribe`/`Unsubscribe` + `onData` callback). Protocol-agnostic — future MQTT source devices can reuse it.
+2. **`startDevicePoller` branching** (`service/polling.go`): When `device.Connection.OPCUseSubscriptions == true` and `Protocol == OPC UA`, delegates to `startDeviceSubscription()` instead of starting a polling loop. Falls back to polling on subscription failure.
+3. **`SubscribeDevice`/`UnsubscribeDevice`** (`opcua/pool.go`): Pool-level subscription management. Lazily creates one `SubscriptionManager` per session (shared across devices on the same endpoint). Uses device's `OPCPublishInterval` and `OPCSamplingInterval` settings.
+4. **`opcuaSubscriptionAdapter`** (`cmd/gateway/main.go`): Thin adapter bridging `SubscriptionHandler` → `ConnectionPool.SubscribeDevice`. Wired via `pollingSvc.SetSubscriptionHandler()`.
+5. **Mixed mode**: Polling and subscription devices coexist. `ReplaceDevice` handles mode switches (subscription↔polling).
+6. **Data flow**: OPC UA server → notification channel → `processDataChange` → `DataHandler` callback → `publisher.Publish()` → MQTT.
 
-**What exists but is dead code** (`internal/adapter/opcua/pool.go`):
-- `recoverSubscriptions()` — called after session reconnect, but subscriptions are never created so `subscriptionState` is always nil
-
-**What exists in domain** (`internal/domain/device.go:174-179`):
-- `OPCUseSubscriptions bool` field on ConnectionConfig — marked "Not yet implemented - planned for Phase 3"
-- `OPCPublishInterval` and `OPCSamplingInterval` fields already exist
-
-**What's needed**:
-1. Instantiate `SubscriptionManager` in `main.go` (or inside `opcua.ConnectionPool`)
-2. In `polling.go`, check `device.Connection.OPCUseSubscriptions` — if true, delegate to SubscriptionManager instead of polling
-3. Wire SubscriptionManager's `DataHandler` callback to publish data points via MQTT publisher
-4. Ensure the subscription path populates DataPoints with the same fields as the polling path (quality, timestamps, latency)
-5. Handle mixed mode: some OPC UA devices poll, others subscribe
-
-**Impact**: For slow-changing values (temperature updated every 30s), subscriptions eliminate 29 wasted poll cycles per interval. Reduces OPC UA server load significantly.
+**Impact**: Eliminates wasted poll cycles for slow-changing values. Reduces OPC UA server load significantly.
 
 ---
 
@@ -54,30 +39,16 @@ These features are **already implemented** but never connected to the main appli
 
 ## High — Significant Improvements
 
-### 4. S7 ReadTags Address-Based Batch Optimization
+### ~~4. S7 ReadTags Address-Based Batch Optimization~~ ✅ DONE
 
-**Status**: S7 `ReadTags()` uses simple fixed-size chunking (20 items per `AGReadMulti` call). Modbus has `buildContiguousRanges()` that merges nearby addresses into contiguous reads, reducing 100 tags to 1-5 reads.
+**Resolved**: Ported Modbus `buildContiguousRanges()` pattern to S7:
 
-**What exists** (`internal/adapter/s7/client.go`):
-- `ReadTags()` chunks tags into groups of `MaxMultiReadItems` (20)
-- `readTagBatch()` calls `AGReadMulti()` — multi-read capability is used
-- `MaxMultiReadItems = 20` in `types.go`
+1. **`batch.go`** (`internal/adapter/s7/batch.go`): `S7BatchConfig` (MaxBytesPerRange=1024, MaxGapBytes=32), `buildS7ContiguousRanges()` groups tags by (area, dbNumber), sorts by offset, and merges nearby tags into contiguous byte ranges with gap-filling.
+2. **`readTagsOptimized()`** (`client.go`): New primary read path: parse all tags → merge into contiguous ranges → each range becomes ONE AGReadMulti item (S7WLByte mode) → extract per-tag values from range buffers using relative offsets.
+3. **Fallback**: If optimized path fails, falls back to original per-tag `readTagBatch()`.
+4. **Unit tests** (`batch_test.go`): 11 tests covering: empty input, single tag, adjacent merge, gap merge, large gap split, max bytes split, different areas, different DBs, unsorted input, overlapping tags, many contiguous tags.
 
-**What exists in benchmarks** (`testing/benchmark/latency/read_latency_test.go:642-654`):
-- Benchmark comments note: "S7 batch efficiency shown here assumes true multi-item PDU reads, which may not be implemented in the actual adapter (currently sequential)" and "Actual adapter may read sequentially, not batched"
-
-**What's missing** (compared to Modbus):
-- No sorting by S7 area (DB, M, I, Q) before batching
-- No contiguous address merging — 20 scattered tags = 20 items in PDU instead of reading contiguous blocks
-- No gap-filling optimization (reading a few extra bytes to merge two nearby ranges)
-
-**Implementation**: Port Modbus's `buildContiguousRanges()` logic:
-1. Group tags by S7 area + DB number
-2. Sort by byte offset within each group
-3. Merge contiguous/nearby ranges (configurable max gap)
-4. Read each merged range as a single buffer, then extract tag values by offset
-
-**Estimated impact**: 3-10x fewer round trips for typical 50-100 tag reads, depending on address distribution.
+**Impact**: 3-10x fewer PDU items for typical 50-100 tag reads. Example: 20 Int16 tags at DB1 offsets 0-38 → 1 AGReadMulti item (40 bytes) instead of 20 items.
 
 ---
 
@@ -87,7 +58,7 @@ These features are **already implemented** but never connected to the main appli
 
 ---
 
-### 6. Separate Worker Pools Per Priority/QoS Tier
+### 6. Separate Worker Pools Per Priority/QoS Tier - planned for V2
 
 **Status**: Foundation exists but is not wired in.
 
@@ -164,7 +135,7 @@ These features are **already implemented** but never connected to the main appli
 
 ---
 
-### 14. Native MQTT Device Support (MQTT → MQTT)
+### 14. Native MQTT Device Support (MQTT → MQTT) - planned for V2 
 
 **Status**: Partial foundation exists, but end-to-end ingestion is **not implemented**.
 
@@ -242,47 +213,72 @@ The three existing adapters (Modbus, OPC UA, S7) are **poll-based** — the gate
 
 Traditional per-device circuit breakers don't apply here — there are no outbound requests to block. Instead, "device health" is inferred from message frequency. If a device that normally publishes every 5s goes silent for 25s, it's marked stale.
 
-##### Subscription Strategy: Per-Tag Topics
+##### Subscription Strategy: Hybrid Wildcard + Per-Tag Routing
+
+Per-tag subscriptions don't scale. A real UNS hierarchy like:
+```
+nexus-spark/delaware/Gent/Production/Line1/RAW/Extruder/ThermalControl
+nexus-spark/delaware/Gent/Production/Line1/RAW/Extruder/MaterialPrep
+nexus-spark/delaware/Gent/Production/Line1/RAW/Extruder/Drive
+nexus-spark/delaware/Gent/Production/Line1/RAW/Extruder/Energy
+... (20+ leaf topics per device)
+```
+Would mean 20+ individual SUBSCRIBE packets per device. With 50 devices = 1000+ subscriptions on a single broker client.
+
+**Instead: one wildcard subscription per device, with per-tag decode routing.**
 
 ```yaml
 # devices.yaml — MQTT device example
-- id: "iot-sensor-floor2"
-  name: Floor 2 Environmental Sensors
+- id: "extruder-line1"
+  name: Line 1 RAW Extruder
   protocol: mqtt
   enabled: true
-  uns_prefix: plant1/floor2/environment
+  uns_prefix: plant1/line1/extruder   # output UNS prefix
   connection:
     mqtt_broker_url: tcp://edge-broker:1883
     mqtt_username: gateway
     mqtt_password: secret123
     mqtt_qos: 1
     mqtt_clean_session: true
-    mqtt_staleness_timeout: 30s     # mark stale if no messages for 30s
+    mqtt_staleness_timeout: 30s
+    mqtt_source_prefix: "nexus-spark/delaware/Gent/Production/Line1/RAW/Extruder"  # ← ONE subscription: .../Extruder/#
   tags:
-    - id: temp-1
-      name: Temperature
-      topic_suffix: temperature
-      mqtt_source_topic: "sensors/floor2/temp/value"     # ← subscribe to this
-      mqtt_payload_format: json                           # raw | string | json | sparkplug_b
-      mqtt_value_path: "$.temperature"                    # JSONPath for value extraction
-      mqtt_timestamp_path: "$.ts"                         # optional: extract device timestamp
-      mqtt_qos: 1                                         # per-tag QoS override
+    # Explicit tags — known leaf topics with specific decode rules
+    - id: energy
+      name: Energy Consumption
+      mqtt_topic_match: "Energy"          # matches ...Extruder/Energy
+      mqtt_payload_format: json
+      mqtt_value_path: "$.value"
+      mqtt_timestamp_path: "$.timestamp"
       data_type: float64
-    - id: humidity-1
-      name: Humidity
-      topic_suffix: humidity
-      mqtt_source_topic: "sensors/floor2/humidity/#"      # wildcards supported
-      mqtt_payload_format: raw                            # raw bytes → float
+      unit: kWh
+    - id: thermal-control
+      name: Thermal Control
+      mqtt_topic_match: "ThermalControl"  # matches ...Extruder/ThermalControl
+      mqtt_payload_format: json
+      mqtt_value_path: "$.value"
       data_type: float64
+    # Catch-all — auto-create tags for any unmatched subtopics
+    # (optional, enabled via auto_discover_tags on the device)
 ```
 
-**Per-tag subscription** (not per-device wildcard) because:
-1. Each tag may decode differently (`json` vs `raw` vs `sparkplug_b`)
-2. Topics may not share a common prefix
-3. QoS can vary per tag
-4. Granular unsubscribe when tags are removed
+**How it works:**
+1. **Device registers** → pool subscribes to `{mqtt_source_prefix}/#` (ONE subscription)
+2. **Message arrives** on `nexus-spark/.../Extruder/Energy` → strip prefix → suffix = `Energy`
+3. **Suffix match** against tags: `Energy` matches tag `energy` → decode with its rules
+4. **Unmatched suffix** (e.g., `Process/SubZone3`): if `auto_discover_tags: true`, auto-create a tag with default decode (json, `$.value`); otherwise log and discard
+5. **Per-tag decode** is preserved — each tag still defines its own `payload_format`, `value_path`, `data_type`
+6. **Per-tag QoS** is NOT needed (MQTT QoS is per-subscription, and we have one wildcard subscription per device — use the device-level QoS)
 
-**Wildcard support**: Tags can use `+` and `#` wildcards in `mqtt_source_topic`. The adapter matches incoming messages to tags by comparing the message topic against the subscribed pattern.
+**Why this is better:**
+- 1 subscription per device instead of N (50 devices = 50 subscriptions, not 1000+)
+- Automatic discovery of new topics under the prefix (no config change needed when a new sensor appears)
+- Still supports per-tag decode rules for known tags
+- Simpler broker-side subscription management
+
+**Escape hatch for non-hierarchical topics**: If a device's topics truly don't share a prefix, fall back to explicit per-tag subscriptions by setting `mqtt_source_prefix: ""` and specifying `mqtt_source_topic` on each tag. This is the exception, not the default.
+
+**Topic suffix matching**: Uses simple suffix comparison (split on `/`, match from the right). Supports `+` single-level wildcard in `mqtt_topic_match` for patterns like `+/Energy` to match `ThermalControl/Energy` and `Drive/Energy`.
 
 ##### Payload Decoding Pipeline
 
@@ -296,34 +292,34 @@ Incoming MQTT Message
 └───────┬───────────┘
         │
         ▼
-┌───────────────────┐
-│ Decode Payload    │
-│                   │
-│ raw:         bytes → Go type via data_type (like Modbus parseValue)
-│ string:      UTF-8 string → strconv.ParseFloat / ParseBool / etc.
-│ json:        JSON unmarshal → JSONPath extract value + optional timestamp
-│ sparkplug_b: Protobuf decode → extract metric by name
-└───────┬───────────┘
+┌───────────────────────────────────────────────────────────────────────────┐
+│ Decode Payload                                                            │
+│                                                                           │
+│ raw:         bytes → Go type via data_type (like Modbus parseValue)       │
+│ string:      UTF-8 string → strconv.ParseFloat / ParseBool / etc.         │
+│ json:        JSON unmarshal → JSONPath extract value + optional timestamp │
+│ sparkplug_b: Protobuf decode → extract metric by name                     │
+└───────┬───────────────────────────────────────────────────────────────────┘
         │
         ▼
-┌───────────────────┐
-│ Build DataPoint   │
-│                   │
-│ DeviceID, TagID, Value, Quality=good
-│ DeviceTimestamp = extracted or message timestamp
-│ GatewayTimestamp = now
-│ Topic = uns_prefix + "/" + topic_suffix
-└───────┬───────────┘
+┌───────────────────────────────────────────────────────┐
+│ Build DataPoint                                       │
+│                                                       │
+│ DeviceID, TagID, Value, Quality=good                  │
+│ DeviceTimestamp = extracted or message timestamp      │
+│ GatewayTimestamp = now                                │
+│ Topic = uns_prefix + "/" + topic_suffix               │
+└───────┬───────────────────────────────────────────────┘
         │
         ▼
-┌───────────────────┐
-│ Deliver           │
-│                   │
-│ 1. Update last-value cache (for ReadTags)
-│ 2. Call dataHandler callback → MQTT publisher
-│ 3. Update staleness timer
-│ 4. Update metrics (messages received, decode errors)
-└───────────────────┘
+┌───────────────────────────────────────────────────────┐
+│ Deliver                                               │
+│                                                       │
+│ 1. Update last-value cache (for ReadTags)             │
+│ 2. Call dataHandler callback → MQTT publisher         │
+│ 3. Update staleness timer                             │
+│ 4. Update metrics (messages received, decode errors)  │
+└───────────────────────────────────────────────────────┘
 ```
 
 ##### Topic Loop Prevention
@@ -347,23 +343,26 @@ New fields needed on `ConnectionConfig` for MQTT devices:
 
 ```go
 // === MQTT Source Settings ===
-MQTTBrokerURL        string        // Source broker URL (tcp:// or ssl://)
-MQTTUsername          string        // Broker authentication
-MQTTPassword          string
-MQTTClientIDPrefix    string        // Client ID prefix (default: "gw-source")
-MQTTQOS               byte          // Default QoS for subscriptions (0, 1, 2)
-MQTTCleanSession      bool          // Clean session on connect
-MQTTStalenessTimeout  time.Duration // Mark device stale after no messages (0 = disabled)
-MQTTTLSEnabled        bool          // TLS for source broker
-MQTTTLSCAFile         string
-MQTTTLSCertFile       string
-MQTTTLSKeyFile        string
+MQTTBrokerURL         string        // Source broker URL (tcp:// or ssl://)
+MQTTUsername           string        // Broker authentication
+MQTTPassword           string
+MQTTClientIDPrefix     string        // Client ID prefix (default: "gw-source")
+MQTTQOS                byte          // Default QoS for device wildcard subscription (0, 1, 2)
+MQTTCleanSession       bool          // Clean session on connect
+MQTTStalenessTimeout   time.Duration // Mark device stale after no messages (0 = disabled)
+MQTTSourcePrefix       string        // Topic prefix → subscribe to {prefix}/# (one sub per device)
+MQTTAutoDiscoverTags   bool          // Auto-create tags for unmatched subtopics under the prefix
+MQTTTLSEnabled         bool          // TLS for source broker
+MQTTTLSCAFile          string
+MQTTTLSCertFile        string
+MQTTTLSKeyFile         string
 ```
 
 New fields on `Tag` for MQTT-sourced tags:
 
 ```go
-MQTTSourceTopic   string // Topic to subscribe to (supports wildcards)
+MQTTTopicMatch    string // Suffix to match under device's source prefix (e.g., "Energy", "Drive/Speed")
+MQTTSourceTopic   string // Full topic override — used when mqtt_source_prefix is empty (per-tag fallback)
 MQTTPayloadFormat string // "raw" | "string" | "json" | "sparkplug_b"
 MQTTValuePath     string // JSONPath for value extraction (json format only)
 MQTTTimestampPath string // JSONPath for timestamp extraction (optional)
@@ -392,18 +391,20 @@ protocolManager.RegisterPool(domain.ProtocolMQTT, mqttSourcePool)
 
 ##### Scope for v1 (Minimal)
 
-1. `source_pool.go` + `source_client.go` — broker sharing, subscription lifecycle
+1. `source_pool.go` + `source_client.go` — broker sharing, per-device wildcard subscription lifecycle
 2. `decoder.go` — `raw` and `json` formats only (sparkplug_b deferred)
-3. Topic loop prevention via prefix guard (layer 2)
-4. Staleness detection with `gateway_mqtt_source_device_stale` metric
-5. Last-value cache for `ReadTags` compatibility
-6. Wire into `main.go`
+3. Wildcard subscription → suffix-based tag routing (core of the hybrid strategy)
+4. Topic loop prevention via prefix guard (layer 2)
+5. Staleness detection with `gateway_mqtt_source_device_stale` metric
+6. Last-value cache for `ReadTags` compatibility
+7. Wire into `main.go`
 
 **Deferred to v2:**
 - Sparkplug B decoding (requires protobuf dependency)
 - MQTT v5 message properties for loop prevention
 - Micro-batching output
-- Wildcard topic → multi-tag fan-out
+- Auto-discovery of unmatched topics as new tags (`auto_discover_tags`)
+- Per-tag fallback subscriptions (for non-hierarchical topic layouts)
 - MQTT source metrics dashboard (Grafana panel)
 
 ## Low — Nice to Have
@@ -445,13 +446,135 @@ Consider as a separate project phase.
 
 ---
 
-### 20. S7 Security Documentation
+### 20. Cross-Protocol Tag & Topic Browsing (Auto-Discovery) - planned for V2
 
-**Status**: S7 protocol has no native authentication (unlike OPC UA). Production deployments need:
-- Risk documentation for auth-less access
-- Config validation warnings in production mode
-- S7comm+ password support for S7-1500 PLCs
-- Network segmentation recommendations
+**Status**: Manual tag entry only. No browse/discovery for any protocol.
+
+**Problem**: When a device has hundreds or thousands of tags (common in manufacturing PLCs, large UNS deployments), configuring them 1-by-1 in `devices.yaml` or via the API is impractical. Users need a way to browse the available address space and select tags.
+
+---
+
+#### Architecture Spec
+
+##### Protocol-Specific Browse Capabilities
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Protocol    │ Native Browse? │ Strategy                                │
+├──────────────┼────────────────┼─────────────────────────────────────────┤
+│  OPC UA      │ YES            │ Browse Services (already in spec,       │
+│              │                │ see TODO #8). Walk address space tree,  │
+│              │                │ return NodeID + DataType + AccessLevel  │
+│              │                │                                         │
+│  MQTT        │ PARTIAL        │ Wildcard probe: subscribe to prefix/#   │
+│              │                │ for N seconds, collect unique topic     │
+│              │                │ suffixes → present as discovered tags.  │
+│              │                │ Also: $SYS/# for broker stats.          │
+│              │                │                                         │
+│  S7          │ YES (limited)  │ Read PLC symbol table via SZL           │
+│              │                │ (System Status List). Returns DB        │
+│              │                │ numbers, offsets, data types. S7-1500   │
+│              │                │ exposes symbolic names via TIA.         │
+│              │                │                                         │
+│  Modbus      │ NO             │ No native browse. Offer "scan range":   │
+│              │                │ try reading address ranges (e.g.,       │
+│              │                │ HR 0-999) and report which respond.     │
+│              │                │ Coil/register map must come from vendor │
+│              │                │ documentation.                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+##### Unified Browse Interface
+
+```go
+// BrowseResult represents a discovered tag/node from any protocol.
+type BrowseResult struct {
+    ID          string            // Suggested tag ID (sanitized node name / topic suffix)
+    Name        string            // Human-readable name
+    Address     string            // Protocol-specific address (NodeID, DB1.DBW0, topic path)
+    DataType    DataType          // Detected data type (if available)
+    AccessMode  AccessMode        // Read, Write, ReadWrite (if detectable)
+    Unit        string            // Engineering unit (OPC UA provides this)
+    Path        []string          // Hierarchical path for tree display
+    Metadata    map[string]string // Protocol-specific extras (OPC UA: namespace, S7: DB number)
+    Children    int               // Number of child nodes (for tree expansion)
+}
+
+// ProtocolBrowser is implemented per protocol adapter.
+type ProtocolBrowser interface {
+    // Browse returns discovered tags/nodes under the given root.
+    // rootPath is protocol-specific:
+    //   OPC UA: NodeID string (e.g., "ns=2;s=MyFolder")
+    //   MQTT:   Topic prefix (e.g., "nexus-spark/delaware/Gent")
+    //   S7:     "" for all DBs, "DB1" for specific DB
+    //   Modbus: Register type + range (e.g., "HR:0-999")
+    Browse(ctx context.Context, device *Device, rootPath string, depth int) ([]BrowseResult, error)
+}
+```
+
+##### API Endpoints
+
+```
+POST /api/browse
+Body: { "device_id": "plc-001", "root_path": "", "depth": 2 }
+Response: { "results": [ ...BrowseResult... ] }
+
+POST /api/browse/import
+Body: { "device_id": "plc-001", "tags": [ { "address": "DB1.DBW0", "name": "Temperature" }, ... ] }
+Effect: Bulk-add selected browse results as tags to the device
+```
+
+##### Per-Protocol Implementation
+
+**OPC UA** (`internal/adapter/opcua/browser.go`):
+- Uses `session.Browse()` and `session.BrowseNext()` from gopcua
+- Starts at `rootPath` (default: `ObjectsFolder` / `i=85`)
+- Returns child nodes with their NodeID, BrowseName, DataType, AccessLevel
+- Recursive with configurable `depth` (default 1 = immediate children)
+- Filters: skip internal/system nodes, configurable namespace filter
+- Extends existing `BrowseResult` struct in `opcua/types.go`
+
+**MQTT** (`internal/adapter/mqtt/browser.go`):
+- Subscribes to `{rootPath}/#` with QoS 0
+- Collects unique topics for `browse_duration` (default: 10s)
+- Groups by hierarchy level, counts messages per topic
+- Returns leaf topics as `BrowseResult` with detected payload format
+- Payload sniffing: try JSON parse → if valid, report field names as potential value paths
+- Auto-detects UNS structure by counting hierarchy depth
+
+**S7** (`internal/adapter/s7/browser.go`):
+- Uses SZL read (System Status List) to enumerate DBs: `SZL ID 0x0111` → DB list
+- For each DB: read DB attributes (size, read/write flags)
+- For S7-1500 with TIA Portal export: parse symbol XML for named variables with types
+- Fallback for S7-300/400: report DB number + size, user provides offset/type manually
+- Returns `BrowseResult` per DB with size metadata
+
+**Modbus** (`internal/adapter/modbus/browser.go`):
+- No native browse — performs "scan range" probe
+- Reads holding registers in chunks of 125, reports which address ranges respond
+- Tries coils in chunks of 1000
+- Reports accessible ranges with response timing (slow responses may indicate gateway-forwarded devices)
+- Optional: Modbus device identification (function code 0x2B/0x0E) for vendor/product info
+
+##### Web UI Integration
+
+```
+Device Config Page
+├── Tags section
+│   ├── [Manual Add] button (existing)
+│   └── [Browse / Discover] button (NEW)
+│       └── Opens browse modal:
+│           ├── Tree view of discovered nodes (expandable)
+│           ├── Checkbox select for bulk import
+│           ├── Preview of selected tags before import
+│           └── [Import Selected] → bulk POST /api/browse/import
+```
+
+##### Scope
+
+**v1**: OPC UA browse + MQTT topic discovery (highest value protocols for auto-discovery)
+**v2**: S7 SZL browse + Modbus scan range + Web UI browse modal
+**v3**: Scheduled re-browse for drift detection (new nodes appeared, old nodes removed)
 
 ---
 

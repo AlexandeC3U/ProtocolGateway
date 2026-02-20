@@ -35,6 +35,11 @@ type pooledSession struct {
 	// === Subscription Recovery ===
 	subscriptionState *SubscriptionRecoveryState
 
+	// === Subscription Manager ===
+	// Manages OPC UA subscriptions for devices on this session.
+	// Created lazily on first SubscribeDevice call.
+	subscriptionMgr *SubscriptionManager
+
 	// === Subscription Activity Tracking ===
 	// Prevents idle reaper from killing sessions with active subscriptions
 	lastPublishTime        time.Time // Last time a subscription publish was received

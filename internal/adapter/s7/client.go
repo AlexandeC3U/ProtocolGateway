@@ -43,6 +43,7 @@ func NewClient(deviceID string, config ClientConfig, logger zerolog.Logger) (*Cl
 
 	c := &Client{
 		config:         config,
+		batchConfig:    DefaultS7BatchConfig(),
 		logger:         logger.With().Str("device_id", deviceID).Str("address", config.Address).Logger(),
 		stats:          &ClientStats{},
 		deviceID:       deviceID,
@@ -213,8 +214,9 @@ func (c *Client) ReadTag(ctx context.Context, tag *domain.Tag) (*domain.DataPoin
 	return dp, nil
 }
 
-// ReadTags reads multiple tags efficiently using AGReadMulti for true batch reads.
-// Groups tags by area and uses gos7's multi-read capability for up to 20 items per PDU.
+// ReadTags reads multiple tags efficiently using address-based contiguous range merging.
+// Nearby tags in the same area/DB are merged into byte-range reads, reducing PDU item count.
+// Falls back to per-tag AGReadMulti on failure.
 func (c *Client) ReadTags(ctx context.Context, tags []*domain.Tag) ([]*domain.DataPoint, error) {
 	if len(tags) == 0 {
 		return nil, nil
@@ -228,9 +230,178 @@ func (c *Client) ReadTags(ctx context.Context, tags []*domain.Tag) ([]*domain.Da
 		return nil, domain.ErrConnectionClosed
 	}
 
+	// Try optimized contiguous-range path first
+	results, err := c.readTagsOptimized(ctx, tags)
+	if err == nil {
+		return results, nil
+	}
+
+	c.logger.Warn().Err(err).Int("tag_count", len(tags)).
+		Msg("Optimized batch read failed, falling back to per-tag batch")
+
+	// Fallback: original per-tag AGReadMulti path
+	return c.readTagsFallback(ctx, tags)
+}
+
+// readTagsOptimized merges nearby tags into contiguous byte ranges and reads each range
+// as a single AGReadMulti item, then extracts per-tag values from the range buffers.
+func (c *Client) readTagsOptimized(ctx context.Context, tags []*domain.Tag) ([]*domain.DataPoint, error) {
+	// Step 1: Parse all tags into s7ParsedTag structs
+	parsed := make([]s7ParsedTag, 0, len(tags))
+	for _, tag := range tags {
+		area, dbNumber, offset, bitOffset, err := c.parseTagAddress(tag)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse address for tag %s: %w", tag.ID, err)
+		}
+		byteCount := c.getByteCount(tag.DataType)
+		parsed = append(parsed, s7ParsedTag{
+			tag:       tag,
+			area:      area,
+			dbNumber:  dbNumber,
+			offset:    offset,
+			bitOffset: bitOffset,
+			byteCount: byteCount,
+		})
+	}
+
+	// Step 2: Merge into contiguous byte ranges
+	ranges := buildS7ContiguousRanges(parsed, c.batchConfig)
+
+	c.logger.Debug().
+		Int("tags", len(tags)).
+		Int("ranges", len(ranges)).
+		Msg("S7 batch: merged tags into contiguous ranges")
+
+	// Step 3: Process ranges in chunks of MaxMultiReadItems
+	// Build a tag-ID → result index map for ordered output
+	resultMap := make(map[string]*domain.DataPoint, len(tags))
+
+	for i := 0; i < len(ranges); i += MaxMultiReadItems {
+		end := i + MaxMultiReadItems
+		if end > len(ranges) {
+			end = len(ranges)
+		}
+		chunk := ranges[i:end]
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		if err := c.readContiguousRanges(chunk, resultMap); err != nil {
+			return nil, err
+		}
+	}
+
+	// Step 4: Assemble results in original tag order
+	results := make([]*domain.DataPoint, len(tags))
+	for i, tag := range tags {
+		dp, ok := resultMap[tag.ID]
+		if !ok {
+			results[i] = c.createErrorDataPoint(tag, fmt.Errorf("tag %s missing from batch result", tag.ID))
+		} else {
+			results[i] = dp
+		}
+	}
+
+	return results, nil
+}
+
+// readContiguousRanges reads a chunk of byte ranges via AGReadMulti and extracts per-tag values.
+func (c *Client) readContiguousRanges(ranges []s7ByteRange, resultMap map[string]*domain.DataPoint) error {
+	// Build AGReadMulti items — one per range, all using S7WLByte
+	dataItems := make([]gos7.S7DataItem, len(ranges))
+	for i, r := range ranges {
+		areaCode, ok := S7AreaCode[r.area]
+		if !ok {
+			return fmt.Errorf("%w: %s", domain.ErrS7InvalidArea, r.area)
+		}
+		dataItems[i] = gos7.S7DataItem{
+			Area:     areaCode,
+			WordLen:  S7WLByte,
+			DBNumber: r.dbNumber,
+			Start:    r.startOffset,
+			Bit:      0,
+			Amount:   r.totalBytes,
+			Data:     make([]byte, r.totalBytes),
+		}
+	}
+
+	// Serialize S7 operations
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+
+	c.mu.RLock()
+	client := c.client
+	c.mu.RUnlock()
+
+	if client == nil {
+		return domain.ErrConnectionClosed
+	}
+
+	// Execute batch read
+	if err := client.AGReadMulti(dataItems, len(dataItems)); err != nil {
+		return fmt.Errorf("%w: AGReadMulti failed: %v", domain.ErrS7ReadFailed, err)
+	}
+
+	// Extract per-tag values from each range buffer
+	for i, r := range ranges {
+		item := dataItems[i]
+
+		// Check per-item error
+		if item.Error != "" {
+			for _, t := range r.tags {
+				c.stats.ErrorCount.Add(1)
+				c.recordTagError(t.tag.ID, fmt.Errorf(item.Error))
+				resultMap[t.tag.ID] = c.createErrorDataPoint(t.tag, fmt.Errorf(item.Error))
+			}
+			continue
+		}
+
+		// Extract each tag's value from the range buffer
+		for _, t := range r.tags {
+			if t.offset+t.byteCount > len(item.Data) {
+				c.stats.ErrorCount.Add(1)
+				err := fmt.Errorf("tag %s: offset %d + size %d exceeds buffer %d",
+					t.tag.ID, t.offset, t.byteCount, len(item.Data))
+				c.recordTagError(t.tag.ID, err)
+				resultMap[t.tag.ID] = c.createErrorDataPoint(t.tag, err)
+				continue
+			}
+
+			tagBytes := item.Data[t.offset : t.offset+t.byteCount]
+			value, parseErr := c.parseValue(tagBytes, t.tag, t.bitOffset)
+			if parseErr != nil {
+				c.stats.ErrorCount.Add(1)
+				c.recordTagError(t.tag.ID, parseErr)
+				resultMap[t.tag.ID] = c.createErrorDataPoint(t.tag, parseErr)
+				continue
+			}
+
+			scaledValue := c.applyScaling(value, t.tag)
+			dp := domain.NewDataPoint(
+				c.deviceID,
+				t.tag.ID,
+				"",
+				scaledValue,
+				t.tag.Unit,
+				domain.QualityGood,
+			).WithRawValue(value)
+
+			resultMap[t.tag.ID] = dp
+			c.stats.ReadCount.Add(1)
+			c.recordTagSuccess(t.tag.ID)
+		}
+	}
+
+	return nil
+}
+
+// readTagsFallback is the original per-tag AGReadMulti path, used when optimized batching fails.
+func (c *Client) readTagsFallback(ctx context.Context, tags []*domain.Tag) ([]*domain.DataPoint, error) {
 	results := make([]*domain.DataPoint, 0, len(tags))
 
-	// Process tags in batches of MaxMultiReadItems (20)
 	for i := 0; i < len(tags); i += MaxMultiReadItems {
 		end := i + MaxMultiReadItems
 		if end > len(tags) {
@@ -247,7 +418,6 @@ func (c *Client) ReadTags(ctx context.Context, tags []*domain.Tag) ([]*domain.Da
 		batchResults, err := c.readTagBatch(ctx, batch)
 		if err != nil {
 			c.logger.Warn().Err(err).Int("batch_start", i).Msg("Batch read failed, falling back to individual reads")
-			// Fallback to individual reads for this batch
 			for _, tag := range batch {
 				dp, readErr := c.ReadTag(ctx, tag)
 				if readErr != nil {

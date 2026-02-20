@@ -174,8 +174,7 @@ type ConnectionConfig struct {
 	// OPCUseSubscriptions enables OPC UA subscriptions (Report-by-Exception) instead of polling.
 	// When true, the server pushes data changes to the client, which is more efficient
 	// for slow-changing values. Requires OPCPublishInterval and OPCSamplingInterval.
-	// NOTE: Not yet implemented - planned for Phase 3 (Gateway Core).
-	// Currently all OPC UA devices use polling.
+	// Falls back to polling if subscription setup fails.
 	OPCUseSubscriptions bool `json:"opc_use_subscriptions,omitempty" yaml:"opc_use_subscriptions,omitempty"`
 
 	// === S7 (Siemens) Settings ===
