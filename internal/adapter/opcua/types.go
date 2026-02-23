@@ -9,6 +9,7 @@ import (
 	"github.com/gopcua/opcua"
 	"github.com/gopcua/opcua/ua"
 	"github.com/nexus-edge/protocol-gateway/internal/domain"
+	"github.com/nexus-edge/protocol-gateway/internal/metrics"
 	"github.com/rs/zerolog"
 )
 
@@ -32,6 +33,7 @@ type Client struct {
 	config       ClientConfig
 	client       *opcua.Client
 	logger       zerolog.Logger
+	metricsReg   *metrics.Registry // Optional metrics registry for clock drift tracking
 	mu           sync.RWMutex
 	opMu         sync.Mutex // Serializes OPC UA operations for thread safety
 	connected    atomic.Bool

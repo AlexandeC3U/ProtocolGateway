@@ -66,6 +66,7 @@ Loaded by `internal/adapter/config/config.go` using **Viper**. Every field has a
 | `opcua` | Max connections (50), security defaults, retries | — |
 | `s7` | Max connections (100), circuit breaker settings | — |
 | `polling` | Worker count (10), batch size (50), default interval (1s), shutdown timeout | — |
+| `ntp` | Enabled (true), server (pool.ntp.org), check interval (5m), warn/crit thresholds | `NTP_SERVER=time.google.com` |
 | `logging` | Level (info), format (json/console), output (stdout) | `LOG_LEVEL=debug`, `LOG_FORMAT=console` |
 
 ### Device Config (`config/devices.yaml`)
@@ -156,7 +157,7 @@ erDiagram
 ### DataPoint Pooling
 
 > **What is `sync.Pool` and why is it used here?**
-> `sync.Pool` is a Go runtime-managed cache of reusable objects. At high poll rates (hundreds of devices × dozens of tags × sub-second intervals), each poll cycle creates thousands of `DataPoint` structs that live briefly and become garbage. The pool keeps a set of pre-allocated `DataPoint`s that goroutines can borrow (`AcquireDataPoint()`) and return (`ReleaseDataPoint()`), reducing GC pause frequency. In practice the codebase currently uses `NewDataPoint()` (heap allocation) for safety — the pool path is available for high-throughput deployments where GC pressure becomes measurable.
+> `sync.Pool` is a Go runtime-managed cache of reusable objects. At high poll rates (hundreds of devices × dozens of tags × sub-second intervals), each poll cycle creates thousands of `DataPoint` structs that live briefly and become garbage. The pool keeps a set of pre-allocated `DataPoint`s that goroutines can borrow (`AcquireDataPoint()`) and return (`ReleaseDataPoint()`), reducing GC pause frequency. All production adapters (S7, Modbus, OPC UA) use `AcquireDataPoint()` to borrow from the pool, and the polling service calls `ReleaseDataPoint()` after publishing — returning them for reuse in the next poll cycle.
 
 ### Error Taxonomy
 
@@ -337,6 +338,7 @@ stateDiagram-v2
 | `modbus_pool` | Modbus Connection Pool | Warning |
 | `opcua_pool` | OPC UA Connection Pool | Warning |
 | `s7_pool` | S7 Connection Pool | Warning |
+| `ntp_sync` | NTP Clock Drift Checker | Warning |
 
 **Flapping protection:**
 - A check must fail **3 consecutive times** before being marked unhealthy
@@ -372,6 +374,9 @@ stateDiagram-v2
 | `gateway_mqtt_reconnects_total` | Counter | — | MQTT broker reconnections |
 | `gateway_devices_registered` | Gauge | — | Total registered devices |
 | `gateway_devices_online` | Gauge | — | Devices currently connected |
+| `gateway_system_clock_drift_seconds` | Gauge | — | Current NTP clock offset (positive = ahead) |
+| `gateway_system_clock_drift_checks_total` | Counter | status | NTP check results (success/error) |
+| `gateway_opcua_clock_drift_seconds` | Gauge | device_id | Clock drift between OPC UA server and gateway |
 
 ### Metrics Readiness Gate
 
@@ -404,6 +409,7 @@ The `/metrics` endpoint returns `503 Service Unavailable` until `gatewayReady` i
 | `internal/api/runtime.go` | Docker CLI log provider for Web UI |
 | `internal/api/runtime_handlers.go` | API handlers: device CRUD, topics overview, container logs |
 | `internal/health/checker.go` | Health check system with flapping protection and K8s probes |
+| `internal/health/ntp_checker.go` | NTP clock drift checker (SNTP/RFC 5905) with configurable thresholds |
 | `internal/metrics/registry.go` | Prometheus metrics registry (connections, polls, MQTT, devices) |
 | `pkg/logging/logger.go` | Structured zerolog wrapper with JSON/console output |
 

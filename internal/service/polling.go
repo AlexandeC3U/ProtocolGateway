@@ -605,6 +605,13 @@ func (s *PollingService) pollDevice(dp *devicePoller) {
 	dp.lastError = nil
 	dp.mu.Unlock()
 
+	// Release all DataPoints back to pool when done (after publishing serializes them).
+	defer func() {
+		for _, point := range dataPoints {
+			domain.ReleaseDataPoint(point)
+		}
+	}()
+
 	// Get slice from pool to reduce GC pressure
 	goodPointsPtr := dataPointPool.Get().(*[]*domain.DataPoint)
 	goodPoints := (*goodPointsPtr)[:0] // Reset length, keep capacity
@@ -639,6 +646,12 @@ func (s *PollingService) pollDevice(dp *devicePoller) {
 
 	s.stats.PointsRead.Add(uint64(len(dataPoints)))
 	dp.stats.pointsRead.Add(uint64(len(dataPoints)))
+
+	// Calculate staleness for good data points relative to expected poll interval.
+	pollInterval := dp.device.PollInterval
+	for _, point := range goodPoints {
+		point.CalculateStaleness(pollInterval)
+	}
 
 	// Publish good data points.
 	// Use the service context for publishing so device read timeout doesn't

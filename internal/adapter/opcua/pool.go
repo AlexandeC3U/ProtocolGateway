@@ -422,7 +422,12 @@ func (p *ConnectionPool) newClientForEndpoint(device *domain.Device) (*Client, e
 		clientConfig.RequestTimeout = 5 * time.Second
 	}
 
-	return NewClient(device.ID, clientConfig, p.logger)
+	client, err := NewClient(device.ID, clientConfig, p.logger)
+	if err != nil {
+		return nil, err
+	}
+	client.SetMetrics(p.metrics)
+	return client, nil
 }
 
 // createCircuitBreaker creates an endpoint-level circuit breaker.

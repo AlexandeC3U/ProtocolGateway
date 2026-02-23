@@ -152,6 +152,13 @@ test-integration-opcua:
 	@echo "Running OPC UA integration tests..."
 	$(GOTEST) -v -tags=integration ./testing/integration/opcua/...
 
+# Run NTP / clock drift unit tests (ntp_checker, clock_drift metrics, ntp config)
+test-ntp:
+	@echo "Running NTP / clock drift tests..."
+	$(GOTEST) -v ./testing/unit/health/... -run "NTP"
+	$(GOTEST) -v ./testing/unit/metrics/... -run "ClockDrift"
+	$(GOTEST) -v ./testing/unit/config/... -run "NTP"
+
 # Run e2e failover tests (device failure, circuit breaker, cascading recovery)
 test-e2e-failover:
 	@echo "Running e2e failover tests..."
@@ -375,6 +382,7 @@ help:
 	@echo "  make test-e2e-memory    - Run e2e memory leak tests"
 	@echo "  make test-e2e-failover  - Run e2e failover tests"
 	@echo "  make test-fuzz          - Run fuzz tests (30s)"
+	@echo "  make test-ntp           - Run NTP / clock drift tests"
 	@echo "  make test-race          - Run tests with race detector"
 	@echo "  make test-all           - Run full test suite"
 	@echo ""

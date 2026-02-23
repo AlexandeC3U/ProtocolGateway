@@ -33,7 +33,7 @@ testing/
 │   │   └── mqtt/              # ✅ publisher_test.go
 │   ├── api/                   # HTTP handlers ✅
 │   ├── config/                # ✅ config_test.go, devices_test.go
-│   ├── health/                # ✅ checker_test.go
+│   ├── health/                # ✅ checker_test.go, ntp_checker_test.go
 │   ├── metrics/               # ✅ registry_test.go
 │   └── service/               # ✅ polling_test.go
 │
@@ -112,9 +112,12 @@ Isolated tests using mocks. No external dependencies.
 | **service** | `polling_test.go` | Poll scheduler | 🔴 High | ✅ |
 | **service** | `command_handler_test.go` | Write commands | 🔴 High | ✅ |
 | **health** | `checker_test.go` | Health aggregation | 🟡 Medium | ✅ |
+| **health** | `ntp_checker_test.go` | NTP clock drift checker | 🟡 Medium | ✅ |
 | **metrics** | `registry_test.go` | Prometheus metrics | 🟢 Low | ✅ |
+| **metrics** | `clock_drift_test.go` | Clock drift metric recording | 🟢 Low | ✅ |
+| **config** | `ntp_config_test.go` | NTP configuration struct | 🟢 Low | ✅ |
 
-**Summary:** 28/28 implemented (100%)
+**Summary:** 31/31 implemented (100%)
 
 ### 2. Integration Tests (`testing/integration/`)
 
@@ -286,12 +289,12 @@ docker-compose -f docker-compose.test.yaml down
 
 | Category | Implemented | Total | Progress |
 |----------|-------------|-------|----------|
-| Unit Tests | 28 | 28 | 100% |
+| Unit Tests | 31 | 31 | 100% |
 | Integration Tests | 14 | 20 | 70% |
 | Benchmark Tests | 12 | 12 | 100% |
 | Fuzz Tests | 9 | 9 | 100% |
 | E2E Tests | 6 | 6 | 100% |
-| **Total** | **69** | **75** | **92%** |
+| **Total** | **72** | **78** | **92%** |
 
 ### Implemented Tests ✅
 
@@ -316,7 +319,10 @@ docker-compose -f docker-compose.test.yaml down
 | `testing/unit/config/` | `config_test.go` | Config struct, validation, defaults |
 | `testing/unit/config/` | `devices_test.go` | Device config, connection config, tags |
 | `testing/unit/health/` | `checker_test.go` | Operational states, severity levels, config |
+| `testing/unit/health/` | `ntp_checker_test.go` | NTP defaults, mock server, critical threshold |
 | `testing/unit/metrics/` | `registry_test.go` | Metric naming, counters, gauges, histograms |
+| `testing/unit/metrics/` | `clock_drift_test.go` | NTP + OPC UA clock drift metric recording |
+| `testing/unit/config/` | `ntp_config_test.go` | NTP config struct, thresholds, defaults |
 | `testing/unit/service/` | `polling_test.go` | Polling config, stats, throughput |
 | `testing/unit/api/` | `handlers_test.go` | Auth middleware, CORS, body limits |
 | `testing/integration/modbus/` | `connection_test.go` | TCP connection, read/write, recovery |
@@ -508,4 +514,4 @@ jobs:
 
 ---
 
-*Last updated: 2026-02-20*
+*Last updated: 2026-02-23*

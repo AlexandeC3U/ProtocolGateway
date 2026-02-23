@@ -42,6 +42,11 @@ type Registry struct {
 	S7WriteDuration    *prometheus.HistogramVec
 	S7BreakerState     *prometheus.GaugeVec
 
+	// Clock drift metrics
+	ClockDriftSeconds prometheus.Gauge        // Current NTP offset in seconds
+	ClockDriftChecks  *prometheus.CounterVec   // NTP check results by status (success/error)
+	OPCUAClockDrift   *prometheus.GaugeVec     // Clock drift between OPC UA server and gateway
+
 	// System metrics
 	GoroutineCount prometheus.Gauge
 	MemoryUsage    prometheus.Gauge
@@ -209,6 +214,26 @@ func NewRegistry() *Registry {
 			Help:      "S7 circuit breaker state per device (0=closed, 1=half-open, 2=open)",
 		}, []string{"device_id"}),
 
+		// Clock drift metrics
+		ClockDriftSeconds: promauto.NewGauge(prometheus.GaugeOpts{
+			Namespace: "gateway",
+			Subsystem: "system",
+			Name:      "clock_drift_seconds",
+			Help:      "Current NTP clock offset in seconds (positive = gateway ahead, negative = behind)",
+		}),
+		ClockDriftChecks: promauto.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "gateway",
+			Subsystem: "system",
+			Name:      "clock_drift_checks_total",
+			Help:      "Total NTP clock drift checks by result",
+		}, []string{"status"}),
+		OPCUAClockDrift: promauto.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "gateway",
+			Subsystem: "opcua",
+			Name:      "clock_drift_seconds",
+			Help:      "Clock drift between OPC UA server and gateway in seconds (positive = gateway ahead)",
+		}, []string{"device_id"}),
+
 		// System metrics
 		GoroutineCount: promauto.NewGauge(prometheus.GaugeOpts{
 			Namespace: "gateway",
@@ -315,4 +340,19 @@ func (r *Registry) RecordS7WriteDuration(deviceID string, duration float64) {
 // 0=closed (normal), 1=half-open (probing), 2=open (blocking).
 func (r *Registry) RecordS7BreakerState(deviceID string, state int) {
 	r.S7BreakerState.WithLabelValues(deviceID).Set(float64(state))
+}
+
+// RecordClockDrift records the current NTP clock offset.
+func (r *Registry) RecordClockDrift(offsetSeconds float64, success bool) {
+	if success {
+		r.ClockDriftSeconds.Set(offsetSeconds)
+		r.ClockDriftChecks.WithLabelValues("success").Inc()
+	} else {
+		r.ClockDriftChecks.WithLabelValues("error").Inc()
+	}
+}
+
+// RecordOPCUAClockDrift records the clock drift between an OPC UA server and the gateway.
+func (r *Registry) RecordOPCUAClockDrift(deviceID string, driftSeconds float64) {
+	r.OPCUAClockDrift.WithLabelValues(deviceID).Set(driftSeconds)
 }

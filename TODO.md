@@ -1,62 +1,12 @@
 # TODO — Connector Gateway Roadmap
 
-Last verified against codebase: **2026-02-20**
+Last verified against codebase: **2026-02-23**
 
 Items are organized by priority. Each item notes what exists today vs what's missing.
 
 ---
 
-## Critical — Wire In Existing Code
-
-These features are **already implemented** but never connected to the main application.
-
-### ~~1. Wire OPC UA Subscriptions into the Polling Path~~ ✅ DONE
-
-**Resolved**: Wired OPC UA subscriptions into the polling/publishing path:
-
-1. **`SubscriptionHandler` interface** (`service/polling.go`): Generic push-based data delivery interface (`Subscribe`/`Unsubscribe` + `onData` callback). Protocol-agnostic — future MQTT source devices can reuse it.
-2. **`startDevicePoller` branching** (`service/polling.go`): When `device.Connection.OPCUseSubscriptions == true` and `Protocol == OPC UA`, delegates to `startDeviceSubscription()` instead of starting a polling loop. Falls back to polling on subscription failure.
-3. **`SubscribeDevice`/`UnsubscribeDevice`** (`opcua/pool.go`): Pool-level subscription management. Lazily creates one `SubscriptionManager` per session (shared across devices on the same endpoint). Uses device's `OPCPublishInterval` and `OPCSamplingInterval` settings.
-4. **`opcuaSubscriptionAdapter`** (`cmd/gateway/main.go`): Thin adapter bridging `SubscriptionHandler` → `ConnectionPool.SubscribeDevice`. Wired via `pollingSvc.SetSubscriptionHandler()`.
-5. **Mixed mode**: Polling and subscription devices coexist. `ReplaceDevice` handles mode switches (subscription↔polling).
-6. **Data flow**: OPC UA server → notification channel → `processDataChange` → `DataHandler` callback → `publisher.Publish()` → MQTT.
-
-**Impact**: Eliminates wasted poll cycles for slow-changing values. Reduces OPC UA server load significantly.
-
----
-
-### ~~2. Test-Connection Handler is a Stub~~ ✅ DONE
-
-**Resolved**: Added `ConnectionTester` interface to `APIHandler` with `SetConnectionTester()` setter. `TestConnectionHandler` now performs a real `ReadTag` against the device's first tag using the protocol pool, with a configurable timeout (falls back to 10s). Returns elapsed time, protocol, and error details on failure (HTTP 503). Gracefully degrades to validation-only when no tester is wired in.
-
----
-
-### ~~3. MQTT Publish Latency Not Measured~~ ✅ DONE
-
-**Resolved**: Added `publishStart := time.Now()` before `token.WaitTimeout()`. All three exit paths (success, timeout, context cancellation) now pass `time.Since(publishStart).Seconds()` to `RecordMQTTPublish()`. The existing `MQTTPublishLatency` histogram now receives real data.
-
----
-
 ## High — Significant Improvements
-
-### ~~4. S7 ReadTags Address-Based Batch Optimization~~ ✅ DONE
-
-**Resolved**: Ported Modbus `buildContiguousRanges()` pattern to S7:
-
-1. **`batch.go`** (`internal/adapter/s7/batch.go`): `S7BatchConfig` (MaxBytesPerRange=1024, MaxGapBytes=32), `buildS7ContiguousRanges()` groups tags by (area, dbNumber), sorts by offset, and merges nearby tags into contiguous byte ranges with gap-filling.
-2. **`readTagsOptimized()`** (`client.go`): New primary read path: parse all tags → merge into contiguous ranges → each range becomes ONE AGReadMulti item (S7WLByte mode) → extract per-tag values from range buffers using relative offsets.
-3. **Fallback**: If optimized path fails, falls back to original per-tag `readTagBatch()`.
-4. **Unit tests** (`batch_test.go`): 11 tests covering: empty input, single tag, adjacent merge, gap merge, large gap split, max bytes split, different areas, different DBs, unsorted input, overlapping tags, many contiguous tags.
-
-**Impact**: 3-10x fewer PDU items for typical 50-100 tag reads. Example: 20 Int16 tags at DB1 offsets 0-38 → 1 AGReadMulti item (40 bytes) instead of 20 items.
-
----
-
-### ~~5. Device Edit Resets Polling State~~ ✅ DONE
-
-**Resolved**: Added `PollingService.ReplaceDevice()` that atomically swaps the device pointer while preserving all runtime state (stats, poll counts, last poll time, error history). The next poll cycle automatically picks up new tags, connection config, and UNS prefix. If the poll interval changed, the poller goroutine is restarted with a new ticker; otherwise no goroutine restart occurs. Updated `main.go` device edit callback to use `ReplaceDevice()` instead of the old unregister+register pattern.
-
----
 
 ### 6. Separate Worker Pools Per Priority/QoS Tier - planned for V2
 
@@ -75,12 +25,6 @@ These features are **already implemented** but never connected to the main appli
 
 ---
 
-### ~~7. Modbus Coil/Discrete Input Batching~~ ✅ DONE
-
-**Resolved**: Added `CoilBatchConfig` (max 1000 coils/read, gap merge ≤ 32), `buildCoilRanges()` for contiguous coil address merging, and `readCoilRange()` that reads a batch via `ReadCoils`/`ReadDiscreteInputs` and extracts individual tag values from the bit-packed response (8 coils per byte, LSB first). `readTagGroup()` now dispatches coils/discrete inputs to `readCoilGroupBatched()` instead of `readTagGroupIndividually()`. Reading 100 scattered coils now takes 1-5 Modbus requests instead of 100.
-
----
-
 ## Medium — Feature Gaps
 
 ### 8. OPC UA Browse & Model Awareness
@@ -92,18 +36,6 @@ These features are **already implemented** but never connected to the main appli
 - `GetNodeAttributes(ctx, nodeID)` to read DataType, AccessLevel, EngineeringUnits
 - Wire into Web UI for tag auto-discovery (instead of manual NodeID entry)
 - Cache results to avoid re-browsing on every connection
-
----
-
-### ~~9. S7 Write Aggregation (Batch Writes)~~ ✅ DONE
-
-**Resolved**: Added `MaxMultiWriteItems` constant (20) and `WriteTags()` batch method on `Client` that uses `AGWriteMulti` for non-boolean writes (up to 20 items per PDU). Boolean writes are excluded from batching because they require read-modify-write to preserve adjacent bits. Pool-level `WriteTags()` now executes the entire batch through the circuit breaker in a single call instead of per-tag. Per-item error tracking via `S7DataItem.Error` field.
-
----
-
-### ~~10. Connection TTL (Hard Cap)~~ ✅ DONE
-
-**Resolved**: Added `MaxTTL time.Duration` config to all three pool implementations (Modbus `PoolConfig`, S7 `PoolConfig`, OPC UA `PoolConfig`). Added `createdAt time.Time` tracking on client/session creation. Updated idle reapers in all pools to check both idle timeout AND MaxTTL expiry, closing connections that exceed either threshold. Modbus and S7 reap in their `reapIdleConnections()` loops; OPC UA reaps in `reapIdleSessions()` with a two-pass approach (identify then close under write lock).
 
 ---
 
@@ -126,12 +58,6 @@ These features are **already implemented** but never connected to the main appli
 - Certificate expiry monitoring with alerting
 - Auto-accept mode for development (with warnings)
 - GDS (Global Discovery Server) integration for large deployments
-
----
-
-### ~~13. Per-Device Circuit Breaker Configuration~~ ✅ DONE
-
-**Resolved**: Added `CircuitBreakerConfig` struct to `domain` package with fields: `MaxRequests`, `Interval`, `Timeout`, `FailureThreshold`, `FailureRatio`. Added optional `CircuitBreaker *CircuitBreakerConfig` field to `ConnectionConfig`. Updated all three pool implementations (Modbus, S7, OPC UA device-level breaker) to apply per-device overrides when present, falling back to pool defaults for any zero-value field.
 
 ---
 
@@ -409,21 +335,7 @@ protocolManager.RegisterPool(domain.ProtocolMQTT, mqttSourcePool)
 
 ## Low — Nice to Have
 
-### 15. DataPoint Pool Usage in Production
-
-**Status**: `AcquireDataPoint()`/`ReleaseDataPoint()` exist with a `sync.Pool` in `domain/datapoint.go`. Only used in tests and benchmarks (`testing/unit/domain/datapoint_test.go`, `testing/benchmark/throughput/datapoint_test.go`, `testing/benchmark/concurrency/stress_test.go`). All production code uses `NewDataPoint()`.
-
-**Note**: The polling service already uses a **slice pool** for `[]*DataPoint` (`polling.go:45-51`), and S7 uses a **buffer pool** for byte buffers (`s7/types.go:122-175`). Both are actively used in production. The element-level DataPoint pool is deliberately avoided for safety — only promote it after profiling shows GC pressure at high device counts.
-
----
-
-### ~~16. `reorderBytes` Allocation Optimization~~ ✅ DONE
-
-**Resolved**: Rewrote `reorderBytes()` in `internal/adapter/modbus/conversion.go` to work entirely in-place with zero allocations. BigEndian is a no-op; LittleEndian does a full byte reverse; MidBigEndian swaps adjacent bytes; MidLitEndian swaps 2-byte halves of each 4-byte group. Eliminated the `make([]byte, len(data))` allocation from the hot path.
-
----
-
-### 17. OPC UA Event & Alarm Support
+### 17. OPC UA Event & Alarm Support - planned for V2
 
 **Status**: Not implemented. Full OPC UA Alarms & Conditions (A&C) is a large subsystem:
 - Event subscriptions (not just data changes)
@@ -431,18 +343,6 @@ protocolManager.RegisterPool(domain.ProtocolMQTT, mqttSourcePool)
 - Historical Data Access (HDA)
 
 Consider as a separate project phase.
-
----
-
-### 18. Clock Drift / NTP Sync Awareness
-
-**Status**: Not implemented. DataPoint already tracks `DeviceTimestamp`, `GatewayTimestamp`, and `StalenessMs` — but there's no NTP sync check, clock drift estimation, or freshness window enforcement.
-
----
-
-### ~~19. S7 Per-Device/Tag Prometheus Metrics~~ ✅ DONE
-
-**Resolved**: Added five S7-specific metrics to `metrics.Registry`: `gateway_s7_device_connected` (gauge, 1/0 per device), `gateway_s7_tag_errors_total` (counter per device+tag), `gateway_s7_read_duration_seconds` (histogram per device), `gateway_s7_write_duration_seconds` (histogram per device), `gateway_s7_breaker_state` (gauge, 0=closed/1=half-open/2=open per device). Connection state and breaker state are published by the existing metrics loop (`publishActiveConnectionMetrics`). Read/write durations and tag errors are recorded at the pool level in `ReadTag`, `ReadTags`, `WriteTag`, and `WriteTags`.
 
 ---
 
@@ -577,13 +477,3 @@ Device Config Page
 **v3**: Scheduled re-browse for drift detection (new nodes appeared, old nodes removed)
 
 ---
-
-## Not an Issue — Investigated and Closed
-
-### Modbus Thread Safety (opMu Mutex)
-
-**Investigation**: The `opMu sync.Mutex` in `modbus/client.go` serializes all Modbus operations because `goburrow/modbus` is not thread-safe.
-
-**Finding**: **Not a bottleneck.** Each device gets its own client with its own `opMu`. The polling architecture uses one goroutine per device, so there's no contention — the mutex only fires if a health check or API write happens concurrently with a poll, which is rare and brief. The batch optimization (`buildContiguousRanges`) already minimizes the number of lock acquisitions per poll cycle.
-
-**Verdict**: Defensive code, correctly applied. No action needed.

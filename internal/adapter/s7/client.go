@@ -380,7 +380,7 @@ func (c *Client) readContiguousRanges(ranges []s7ByteRange, resultMap map[string
 			}
 
 			scaledValue := c.applyScaling(value, t.tag)
-			dp := domain.NewDataPoint(
+			dp := domain.AcquireDataPoint(
 				c.deviceID,
 				t.tag.ID,
 				"",
@@ -529,7 +529,7 @@ func (c *Client) readTagBatch(ctx context.Context, tags []*domain.Tag) ([]*domai
 		scaledValue := c.applyScaling(value, tag)
 
 		// Create data point
-		dp := domain.NewDataPoint(
+		dp := domain.AcquireDataPoint(
 			c.deviceID,
 			tag.ID,
 			"", // Topic will be set by caller
@@ -885,7 +885,7 @@ func (c *Client) readData(tag *domain.Tag, area domain.S7Area, dbNumber, offset,
 	scaledValue := c.applyScaling(value, tag)
 
 	// Create data point
-	dp := domain.NewDataPoint(
+	dp := domain.AcquireDataPoint(
 		c.deviceID,
 		tag.ID,
 		"", // Topic will be set by the caller
@@ -1138,7 +1138,7 @@ func (c *Client) createErrorDataPoint(tag *domain.Tag, err error) *domain.DataPo
 		quality = domain.QualityNotConnected
 	}
 
-	return domain.NewDataPoint(
+	return domain.AcquireDataPoint(
 		c.deviceID,
 		tag.ID,
 		"",

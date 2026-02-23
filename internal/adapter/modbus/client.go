@@ -205,7 +205,7 @@ func (c *Client) ReadTag(ctx context.Context, tag *domain.Tag) (*domain.DataPoin
 	scaledValue := applyScaling(value, tag)
 
 	// Create data point
-	dp := domain.NewDataPoint(
+	dp := domain.AcquireDataPoint(
 		c.deviceID,
 		tag.ID,
 		"", // Topic will be set by the caller
@@ -530,7 +530,7 @@ func (c *Client) readRegisterRange(ctx context.Context, rng RegisterRange, regTy
 		scaledValue := applyScaling(value, tag)
 		c.recordTagSuccess(tag.ID)
 
-		dp := domain.NewDataPoint(
+		dp := domain.AcquireDataPoint(
 			c.deviceID,
 			tag.ID,
 			"",
@@ -700,7 +700,7 @@ func (c *Client) readCoilRange(ctx context.Context, rng RegisterRange, regType d
 		scaledValue := applyScaling(value, tag)
 		c.recordTagSuccess(tag.ID)
 
-		dp := domain.NewDataPoint(
+		dp := domain.AcquireDataPoint(
 			c.deviceID,
 			tag.ID,
 			"",
@@ -744,7 +744,7 @@ func (c *Client) createErrorDataPoint(tag *domain.Tag, err error) *domain.DataPo
 		quality = domain.QualityNotConnected
 	}
 
-	return domain.NewDataPoint(
+	return domain.AcquireDataPoint(
 		c.deviceID,
 		tag.ID,
 		"",

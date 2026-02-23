@@ -286,6 +286,21 @@ func main() {
 	healthChecker.AddCheck("opcua_pool", opcuaPool)
 	healthChecker.AddCheck("s7_pool", s7Pool)
 
+	// Initialize NTP clock drift checker
+	if cfg.NTP.Enabled {
+		ntpChecker := health.NewNTPChecker(health.NTPConfig{
+			Enabled:       cfg.NTP.Enabled,
+			Server:        cfg.NTP.Server,
+			CheckInterval: cfg.NTP.CheckInterval,
+			WarnThreshold: cfg.NTP.WarnThreshold,
+			CritThreshold: cfg.NTP.CritThreshold,
+		}, logger, metricsRegistry)
+		ntpChecker.Start()
+		defer ntpChecker.Stop()
+		healthChecker.AddCheckWithSeverity("ntp_sync", ntpChecker, health.SeverityWarning)
+		logger.Info().Str("server", cfg.NTP.Server).Msg("NTP clock drift checker registered")
+	}
+
 	// Start background health checks
 	healthChecker.Start()
 

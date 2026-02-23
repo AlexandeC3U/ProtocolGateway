@@ -42,6 +42,9 @@ type Config struct {
 
 	// Logging configuration
 	Logging LoggingConfig `mapstructure:"logging"`
+
+	// NTP clock drift monitoring configuration
+	NTP NTPConfig `mapstructure:"ntp"`
 }
 
 // HTTPConfig holds HTTP server configuration.
@@ -141,6 +144,20 @@ type LoggingConfig struct {
 	Format     string `mapstructure:"format"` // json or console
 	Output     string `mapstructure:"output"` // stdout, stderr, or file path
 	TimeFormat string `mapstructure:"time_format"`
+}
+
+// NTPConfig holds NTP clock drift monitoring configuration.
+type NTPConfig struct {
+	// Enabled enables periodic NTP clock drift checks (default: true)
+	Enabled bool `mapstructure:"enabled"`
+	// Server is the NTP server to query (default: "pool.ntp.org")
+	Server string `mapstructure:"server"`
+	// CheckInterval is how often to query the NTP server (default: 5m)
+	CheckInterval time.Duration `mapstructure:"check_interval"`
+	// WarnThreshold triggers a warning log if drift exceeds this (default: 500ms)
+	WarnThreshold time.Duration `mapstructure:"warn_threshold"`
+	// CritThreshold fails the health check if drift exceeds this (default: 2s)
+	CritThreshold time.Duration `mapstructure:"crit_threshold"`
 }
 
 // Load loads configuration from files and environment variables.
@@ -259,6 +276,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("logging.format", "json")
 	v.SetDefault("logging.output", "stdout")
 	v.SetDefault("logging.time_format", time.RFC3339)
+
+	// NTP clock drift monitoring
+	v.SetDefault("ntp.enabled", true)
+	v.SetDefault("ntp.server", "pool.ntp.org")
+	v.SetDefault("ntp.check_interval", 5*time.Minute)
+	v.SetDefault("ntp.warn_threshold", 500*time.Millisecond)
+	v.SetDefault("ntp.crit_threshold", 2*time.Second)
 }
 
 // bindEnvVars binds environment variables to config keys.

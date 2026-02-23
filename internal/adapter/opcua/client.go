@@ -16,6 +16,7 @@ import (
 	"github.com/gopcua/opcua"
 	"github.com/gopcua/opcua/ua"
 	"github.com/nexus-edge/protocol-gateway/internal/domain"
+	"github.com/nexus-edge/protocol-gateway/internal/metrics"
 	"github.com/rs/zerolog"
 )
 
@@ -76,6 +77,11 @@ func NewClient(deviceID string, config ClientConfig, logger zerolog.Logger) (*Cl
 	}
 
 	return c, nil
+}
+
+// SetMetrics sets the metrics registry for clock drift tracking.
+func (c *Client) SetMetrics(m *metrics.Registry) {
+	c.metricsReg = m
 }
 
 // Connect establishes the connection to the OPC UA server.
@@ -640,7 +646,7 @@ func (c *Client) processReadResult(result *ua.DataValue, tag *domain.Tag) *domai
 	quality := c.statusCodeToQuality(result.Status)
 
 	if quality != domain.QualityGood {
-		return domain.NewDataPoint(
+		return domain.AcquireDataPoint(
 			c.deviceID,
 			tag.ID,
 			"",
@@ -656,7 +662,7 @@ func (c *Client) processReadResult(result *ua.DataValue, tag *domain.Tag) *domai
 	// Apply scaling and offset
 	scaledValue := applyScaling(value, tag)
 
-	dp := domain.NewDataPoint(
+	dp := domain.AcquireDataPoint(
 		c.deviceID,
 		tag.ID,
 		"",
@@ -665,9 +671,13 @@ func (c *Client) processReadResult(result *ua.DataValue, tag *domain.Tag) *domai
 		quality,
 	).WithRawValue(value).WithPriority(tag.Priority)
 
-	// Set source timestamp from OPC UA if available
+	// Set source timestamp from OPC UA if available and record clock drift
 	if !result.SourceTimestamp.IsZero() {
 		dp.WithSourceTimestamp(result.SourceTimestamp)
+		if c.metricsReg != nil {
+			drift := time.Since(result.SourceTimestamp)
+			c.metricsReg.RecordOPCUAClockDrift(c.deviceID, drift.Seconds())
+		}
 	}
 
 	return dp
@@ -1004,7 +1014,7 @@ func (c *Client) createErrorDataPoint(tag *domain.Tag, err error) *domain.DataPo
 		quality = domain.QualityNotConnected
 	}
 
-	return domain.NewDataPoint(
+	return domain.AcquireDataPoint(
 		c.deviceID,
 		tag.ID,
 		"",
