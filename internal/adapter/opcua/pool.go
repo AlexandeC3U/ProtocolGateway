@@ -24,6 +24,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand/v2"
+	"strings"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -38,6 +39,12 @@ import (
 // =============================================================================
 // Connection Pool
 // =============================================================================
+
+// cachedBrowse holds a cached browse result with expiration time.
+type cachedBrowse struct {
+	result  *BrowseResult
+	expires time.Time
+}
 
 // ConnectionPool manages OPC UA sessions keyed by endpoint, not device.
 // Multiple devices sharing the same endpoint share a single OPC UA session.
@@ -57,6 +64,14 @@ type ConnectionPool struct {
 	priorityQueues    [3]chan *opRequest // Priority tiers: 0=telemetry, 1=control, 2=safety
 	brownoutMode      atomic.Bool        // True when under global pressure
 	brownoutThreshold float64            // Fraction of maxGlobalInFlight to trigger brownout
+
+	// Browse cache (per-endpoint, keyed by "endpointKey|nodeID|depth")
+	browseCache    sync.Map // map[string]*cachedBrowse
+	browseCacheTTL time.Duration
+
+	// Trust store for server certificate validation
+	trustStore *TrustStore
+	autoTrust  bool
 }
 
 // PoolConfig holds configuration for the connection pool.
@@ -206,6 +221,7 @@ func NewConnectionPool(config PoolConfig, logger zerolog.Logger, metricsReg *met
 		metrics:           metricsReg,
 		maxGlobalInFlight: int64(config.MaxGlobalInFlight),
 		brownoutThreshold: config.BrownoutThreshold,
+		browseCacheTTL:    60 * time.Second, // Browse cache expires after 60s
 	}
 
 	// Initialize priority queues
@@ -231,6 +247,16 @@ func NewConnectionPool(config PoolConfig, logger zerolog.Logger, metricsReg *met
 		Msg("OPC UA connection pool initialized with per-endpoint session sharing")
 
 	return pool
+}
+
+// SetTrustStore configures the pool's trust store for server certificate validation.
+// When set, server certificates are validated against the trust store during connection.
+func (p *ConnectionPool) SetTrustStore(ts *TrustStore, autoTrust bool) {
+	p.trustStore = ts
+	p.autoTrust = autoTrust
+	p.logger.Info().
+		Bool("auto_trust", autoTrust).
+		Msg("Trust store configured for OPC UA connection pool")
 }
 
 // =============================================================================
@@ -323,6 +349,9 @@ func (p *ConnectionPool) getClientFromExistingSession(ctx context.Context, sessi
 	if err != nil {
 		return nil, err
 	}
+
+	// Clear stale browse cache for this endpoint
+	p.ClearBrowseCacheForEndpoint(session.endpointKey)
 
 	// Trigger subscription recovery
 	if session.subscriptionState != nil {
@@ -443,6 +472,13 @@ func (p *ConnectionPool) newClientForEndpoint(device *domain.Device) (*Client, e
 		return nil, err
 	}
 	client.SetMetrics(p.metrics)
+
+	// Pass trust store to client for server cert validation during Connect()
+	if p.trustStore != nil {
+		client.trustStore = p.trustStore
+		client.autoTrust = p.autoTrust
+	}
+
 	return client, nil
 }
 
@@ -856,6 +892,97 @@ func (p *ConnectionPool) WriteTags(ctx context.Context, device *domain.Device, w
 		return errors
 	}
 	return result
+}
+
+// =============================================================================
+// Browse Operations
+// =============================================================================
+
+// BrowseNodes explores the OPC UA address space for a device.
+// Results are cached per-endpoint for browseCacheTTL (60s default).
+// nodeID can be empty to start from the Objects folder.
+// maxDepth controls recursion (1 = immediate children only).
+func (p *ConnectionPool) BrowseNodes(ctx context.Context, deviceID string, nodeID string, maxDepth int) (*BrowseResult, error) {
+	// Get the session for this device
+	session, exists := p.getSessionForDevice(deviceID)
+	if !exists {
+		return nil, domain.ErrDeviceNotFound
+	}
+
+	binding, exists := p.getDeviceBinding(deviceID)
+	if !exists {
+		return nil, domain.ErrDeviceNotFound
+	}
+
+	// Build cache key
+	cacheKey := fmt.Sprintf("%s|%s|%d", binding.EndpointKey, nodeID, maxDepth)
+
+	// Check cache first
+	if cached, ok := p.browseCache.Load(cacheKey); ok {
+		cb := cached.(*cachedBrowse)
+		if time.Now().Before(cb.expires) {
+			p.logger.Debug().
+				Str("device_id", deviceID).
+				Str("node_id", nodeID).
+				Msg("Browse cache hit")
+			return cb.result, nil
+		}
+		// Expired, remove from cache
+		p.browseCache.Delete(cacheKey)
+	}
+
+	// Execute browse through endpoint circuit breaker only (browse errors are endpoint issues)
+	var result *BrowseResult
+	_, err := session.breaker.Execute(func() (interface{}, error) {
+		var browseErr error
+		result, browseErr = session.client.Browse(ctx, nodeID, maxDepth)
+		return result, browseErr
+	})
+
+	if err != nil {
+		if err == gobreaker.ErrOpenState {
+			return nil, fmt.Errorf("%w: endpoint breaker open", domain.ErrCircuitBreakerOpen)
+		}
+		return nil, err
+	}
+
+	// Cache the result
+	p.browseCache.Store(cacheKey, &cachedBrowse{
+		result:  result,
+		expires: time.Now().Add(p.browseCacheTTL),
+	})
+
+	p.logger.Debug().
+		Str("device_id", deviceID).
+		Str("node_id", nodeID).
+		Int("max_depth", maxDepth).
+		Int("children", len(result.Children)).
+		Msg("Browse completed and cached")
+
+	return result, nil
+}
+
+// ClearBrowseCache clears the browse cache for all endpoints.
+// Called automatically on session reconnect.
+func (p *ConnectionPool) ClearBrowseCache() {
+	p.browseCache.Range(func(key, _ interface{}) bool {
+		p.browseCache.Delete(key)
+		return true
+	})
+	p.logger.Debug().Msg("Browse cache cleared")
+}
+
+// ClearBrowseCacheForEndpoint clears browse cache entries for a specific endpoint.
+func (p *ConnectionPool) ClearBrowseCacheForEndpoint(endpointKey string) {
+	prefix := endpointKey + "|"
+	p.browseCache.Range(func(key, _ interface{}) bool {
+		if keyStr, ok := key.(string); ok {
+			if strings.HasPrefix(keyStr, prefix) {
+				p.browseCache.Delete(key)
+			}
+		}
+		return true
+	})
 }
 
 // =============================================================================

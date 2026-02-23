@@ -112,6 +112,11 @@ type OPCUAConfig struct {
 	DefaultSecurityPolicy string        `mapstructure:"default_security_policy"`
 	DefaultSecurityMode   string        `mapstructure:"default_security_mode"`
 	DefaultAuthMode       string        `mapstructure:"default_auth_mode"`
+
+	// Certificate Trust Store Management
+	TrustStorePath    string        `mapstructure:"trust_store_path"`    // Path to PKI directory (default: ./pki)
+	AutoTrust         bool          `mapstructure:"auto_trust"`          // Auto-accept untrusted certs (dev only!)
+	CertCheckInterval time.Duration `mapstructure:"cert_check_interval"` // How often to check cert expiry (default: 1h)
 }
 
 // S7Config holds S7 connection pool configuration.
@@ -250,6 +255,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("opcua.default_security_policy", "None")
 	v.SetDefault("opcua.default_security_mode", "None")
 	v.SetDefault("opcua.default_auth_mode", "Anonymous")
+	v.SetDefault("opcua.trust_store_path", "./pki")
+	v.SetDefault("opcua.auto_trust", false)
+	v.SetDefault("opcua.cert_check_interval", 1*time.Hour)
 
 	// S7
 	v.SetDefault("s7.max_connections", 100)

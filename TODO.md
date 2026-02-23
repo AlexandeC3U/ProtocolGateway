@@ -2,11 +2,7 @@
 
 Last verified against codebase: **2026-02-23**
 
-Items are organized by priority. Each item notes what exists today vs what's missing.
-
 ---
-
-## High — Significant Improvements
 
 ### 6. Separate Worker Pools Per Priority/QoS Tier - planned for V2
 
@@ -25,20 +21,6 @@ Items are organized by priority. Each item notes what exists today vs what's mis
 
 ---
 
-## Medium — Feature Gaps
-
-### 8. OPC UA Browse & Model Awareness
-
-**Status**: `BrowseResult` struct exists in `opcua/types.go:198-204` but no `Browse()` function is implemented. OPC UA is treated as a flat node reader — users must manually enter NodeIDs.
-
-**What's needed**:
-- `Browse(ctx, nodeID)` function to walk the address space tree
-- `GetNodeAttributes(ctx, nodeID)` to read DataType, AccessLevel, EngineeringUnits
-- Wire into Web UI for tag auto-discovery (instead of manual NodeID entry)
-- Cache results to avoid re-browsing on every connection
-
----
-
 ### 11. OPC UA Type System Fidelity - planned for V2
 
 **Status**: Currently flattens all OPC UA values via `v.Value()` to basic Go types. Loses array types, LocalizedText, ExtensionObjects, Enums, structured types.
@@ -49,17 +31,6 @@ Items are organized by priority. Each item notes what exists today vs what's mis
 
 ---
 
-### 12. OPC UA Certificate Trust Store Management
-
-**Status**: `security.go` loads certificates and validates them. But there's no trust list management, rejected certs folder, auto-accept for dev mode, or expiry monitoring.
-
-**What's needed for production deployments**:
-- Trust/reject list management
-- Certificate expiry monitoring with alerting
-- Auto-accept mode for development (with warnings)
-- GDS (Global Discovery Server) integration for large deployments
-
----
 
 ### 14. Native MQTT Device Support (MQTT → MQTT) - planned for V2 
 
@@ -333,7 +304,6 @@ protocolManager.RegisterPool(domain.ProtocolMQTT, mqttSourcePool)
 - Per-tag fallback subscriptions (for non-hierarchical topic layouts)
 - MQTT source metrics dashboard (Grafana panel)
 
-## Low — Nice to Have
 
 ### 17. OPC UA Event & Alarm Support - planned for V2
 

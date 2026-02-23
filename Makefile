@@ -1,7 +1,7 @@
 # Protocol Gateway Makefile
 # Production-grade build and development commands
 
-.PHONY: all build run test test-cover lint fmt vet clean docker-build docker-run dev help
+.PHONY: all build run test test-cover lint fmt vet clean docker-build docker-run dev help test-opcua test-opcua-browse test-opcua-truststore
 
 # Variables
 BINARY_NAME=protocol-gateway
@@ -158,6 +158,21 @@ test-ntp:
 	$(GOTEST) -v ./testing/unit/health/... -run "NTP"
 	$(GOTEST) -v ./testing/unit/metrics/... -run "ClockDrift"
 	$(GOTEST) -v ./testing/unit/config/... -run "NTP"
+
+# Run OPC UA Browse tests (address space browsing, BrowseResult struct)
+test-opcua-browse:
+	@echo "Running OPC UA Browse tests..."
+	$(GOTEST) -v ./testing/unit/adapters/opcua/... -run "Browse"
+
+# Run OPC UA Trust Store tests (PKI directory, certificate management)
+test-opcua-truststore:
+	@echo "Running OPC UA Trust Store tests..."
+	$(GOTEST) -v ./testing/unit/adapters/opcua/... -run "TrustStore|Certificate"
+
+# Run all OPC UA unit tests (browse, trust store, etc.)
+test-opcua:
+	@echo "Running all OPC UA unit tests..."
+	$(GOTEST) -v ./testing/unit/adapters/opcua/...
 
 # Run e2e failover tests (device failure, circuit breaker, cascading recovery)
 test-e2e-failover:
@@ -383,6 +398,9 @@ help:
 	@echo "  make test-e2e-failover  - Run e2e failover tests"
 	@echo "  make test-fuzz          - Run fuzz tests (30s)"
 	@echo "  make test-ntp           - Run NTP / clock drift tests"
+	@echo "  make test-opcua         - Run all OPC UA unit tests"
+	@echo "  make test-opcua-browse  - Run OPC UA Browse tests"
+	@echo "  make test-opcua-truststore - Run OPC UA Trust Store tests"
 	@echo "  make test-race          - Run tests with race detector"
 	@echo "  make test-all           - Run full test suite"
 	@echo ""

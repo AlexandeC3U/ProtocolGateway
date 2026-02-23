@@ -1307,6 +1307,166 @@ The OPC UA adapter implements a three-tier load control system to prevent overwh
 └────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+#### 6.2.4 Address Space Browse
+
+The OPC UA adapter includes an address space browser that allows users to explore available nodes on a server, making tag configuration significantly easier. Instead of requiring operators to know exact NodeIDs in advance, they can browse the server's object model interactively through the Web UI or REST API.
+
+```
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                       OPC UA ADDRESS SPACE BROWSE                              │
+│                                                                                │
+│  Architecture:                                                                 │
+│                                                                                │
+│  ┌──────────┐     ┌──────────────┐     ┌───────────────┐     ┌─────────────┐   │
+│  │  Web UI  │────►│  REST API    │────►│  Pool Browse  │────►│  OPC UA     │   │
+│  │  Browse  │     │  Handler     │     │  (cached)     │     │  Server     │   │
+│  │  Modal   │◄────│              │◄────│               │◄────│             │   │
+│  └──────────┘     └──────────────┘     └───────────────┘     └─────────────┘   │
+│                                                                                │
+│  Request Flow:                                                                 │
+│  1. User clicks "Browse" button on OPC UA tag field                            │
+│  2. GET /api/browse/{deviceID}?node_id=&max_depth=2                            │
+│  3. Pool checks per-endpoint cache (60s TTL)                                   │
+│  4. Cache miss → execute through endpoint circuit breaker                      │
+│  5. Client.Browse() reads attributes in batch (3-attribute read per node)      │
+│  6. Recurse children up to max_depth (capped at 5)                             │
+│  7. User selects Variable node → auto-fills opc_node_id in tag form            │
+│                                                                                │
+│  Browse Algorithm:                                                             │
+│  ┌──────────────────────────────────────────────────────────────────────────┐  │
+│  │  browseNode(nodeID, maxDepth, currentDepth):                             │  │
+│  │    1. Batch read: DisplayName, BrowseName, NodeClass (single request)    │  │
+│  │    2. If NodeClass == Variable:                                          │  │
+│  │       Read DataType + AccessLevel (second batch request)                 │  │
+│  │    3. If currentDepth >= maxDepth:                                       │  │
+│  │       checkHasChildren() with RequestedMaxReferences=1 (lightweight)     │  │
+│  │       Return result with has_children=true/false                         │  │
+│  │    4. Else:                                                              │  │
+│  │       browseChildren() with HierarchicalReferences (NodeID 33)           │  │
+│  │       Handle continuation points via BrowseNext                          │  │
+│  │       Recurse into each child                                            │  │
+│  └──────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                │
+│  Caching:                                                                      │
+│  • Per-endpoint cache keyed by "endpointKey|nodeID|depth"                      │
+│  • 60-second TTL (address space rarely changes at runtime)                     │
+│  • Devices sharing an endpoint share the cache                                 │
+│  • Cache cleared automatically on session reconnect                            │
+│                                                                                │
+│  BrowseResult JSON Structure:                                                  │
+│  {                                                                             │
+│    "node_id": "ns=2;s=Demo.Static.Scalar",                                     │
+│    "display_name": "Scalar",                                                   │
+│    "browse_name": "Scalar",                                                    │
+│    "node_class": 1,                                                            │
+│    "node_class_name": "Object",                                                │
+│    "has_children": true,                                                       │
+│    "children": [                                                               │
+│      {                                                                         │
+│        "node_id": "ns=2;s=Demo.Static.Scalar.Float",                           │
+│        "display_name": "Float",                                                │
+│        "node_class_name": "Variable",                                          │
+│        "data_type": "Float",                                                   │
+│        "access_level": "Read, Write",                                          │
+│        "has_children": false                                                   │
+│      }                                                                         │
+│    ]                                                                           │
+│  }                                                                             │
+│                                                                                │
+│  NodeClass Filter: Object, Variable, Method (ignores types/views)              │
+│  Reference Type: HierarchicalReferences with subtypes                          │
+│  Max Results Per Node: 1000 (handles continuation points for large servers)    │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 6.2.5 Certificate Trust Store
+
+The OPC UA adapter implements certificate trust management per OPC UA Part 12, enabling secure server certificate validation with a workflow for reviewing and approving unknown certificates. This is critical in industrial environments where servers often use self-signed certificates that cannot be validated against a public CA.
+
+```
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                    OPC UA CERTIFICATE TRUST STORE                              │
+│                                                                                │
+│  PKI Directory Structure (per OPC UA Part 12):                                 │
+│                                                                                │
+│  pki/                                                                          │
+│  ├── trusted/                                                                  │
+│  │   └── certs/         Trusted CA and server certificates                     │
+│  ├── rejected/                                                                 │
+│  │   └── certs/         Server certs that failed validation (for review)       │
+│  ├── issuers/                                                                  │
+│  │   └── certs/         Intermediate CA certificates                           │
+│  └── own/                                                                      │
+│      ├── cert.der       Gateway's own application certificate                  │
+│      └── private/                                                              │
+│          └── key.pem    Gateway's private key                                  │
+│                                                                                │
+│  Certificate Validation Flow (during Connect):                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐  │
+│  │                                                                          │  │
+│  │   Endpoint Discovery                                                     │  │
+│  │   returns ServerCertificate                                              │  │
+│  │           │                                                              │  │
+│  │           ▼                                                              │  │
+│  │   ┌─────────────────┐                                                    │  │
+│  │   │ Parse DER cert  │                                                    │  │
+│  │   │ SHA-256 fingerprint                                                  │  │
+│  │   └────────┬────────┘                                                    │  │
+│  │            │                                                             │  │
+│  │            ▼                                                             │  │
+│  │   ┌─────────────────┐     YES                                            │  │
+│  │   │ In trusted/?    │──────────► ALLOW CONNECTION                        │  │
+│  │   └────────┬────────┘                                                    │  │
+│  │            │ NO                                                          │  │
+│  │            ▼                                                             │  │
+│  │   ┌─────────────────┐     YES                                            │  │
+│  │   │ In rejected/?   │──────────► REJECT (explicit deny)                  │  │
+│  │   └────────┬────────┘                                                    │  │
+│  │            │ NO (unknown cert)                                           │  │
+│  │            ▼                                                             │  │
+│  │   ┌─────────────────┐     YES                                            │  │
+│  │   │ auto_trust=true?│──────────► Add to trusted/ → ALLOW                 │  │
+│  │   └────────┬────────┘            (logs warning)                          │  │
+│  │            │ NO                                                          │  │
+│  │            ▼                                                             │  │
+│  │   Add to rejected/ for                                                   │  │
+│  │   manual review via API                                                  │  │
+│  │   → REJECT CONNECTION                                                    │  │
+│  │                                                                          │  │
+│  └──────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                │
+│  Certificate Management API:                                                   │
+│  • GET    /api/opcua/certificates/trusted   List trusted certs                 │
+│  • GET    /api/opcua/certificates/rejected  List rejected (pending review)     │
+│  • POST   /api/opcua/certificates/trust     Promote rejected → trusted         │
+│  • DELETE /api/opcua/certificates/trusted?fingerprint=sha256:...               │
+│                                                                                │
+│  Configuration:                                                                │
+│  ┌──────────────────────────────────────────────────────────────────────────┐  │
+│  │  opcua:                                                                  │  │
+│  │    trust_store_path: "./pki"        # PKI directory base path            │  │
+│  │    auto_trust: false                # NEVER true in production           │  │
+│  │    cert_check_interval: 1h          # Expiry monitoring frequency        │  │
+│  └──────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                │
+│  Metrics:                                                                      │
+│  • gateway_opcua_certs_total{store="trusted|rejected"}                         │
+│  • gateway_opcua_cert_expiry_days{fingerprint, subject}                        │
+│                                                                                │
+│  Certificate Storage:                                                          │
+│  • Certificates stored in DER format                                           │
+│  • Filenames: {CommonName}_{fingerprint_8chars}.der                            │
+│  • Reads both PEM and DER on load                                              │
+│  • Fingerprint: SHA-256 with "sha256:" prefix                                  │
+│                                                                                │
+│    WARNING: auto_trust=true bypasses certificate validation entirely.          │
+│     Only use in development or when connecting to known self-signed servers.   │
+│     Production deployments should use manual certificate approval workflow.    │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+```
+
 ### 6.3 S7 Adapter
 
 #### 6.3.1 Address Parsing
@@ -2482,8 +2642,120 @@ The health check system provides Kubernetes-compatible probes with flapping prot
 │  • Modbus Pool: At least one successful connection                             │
 │  • OPC UA Pool: At least one active session                                    │
 │  • S7 Pool: At least one connected PLC                                         │
+│  • NTP Sync: System clock within acceptable drift threshold                    │
 │                                                                                │
 └────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 10.4 Time Synchronization & Clock Drift
+
+Industrial gateways aggregate data from multiple PLCs and OPC UA servers, each with independent clocks. Accurate timestamps are critical for SCADA/MES correlation, historical data analysis, and alarm sequencing. The gateway implements multi-layer time synchronization to detect and report clock drift at both the system and device level.
+
+```
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                     TIME SYNCHRONIZATION ARCHITECTURE                         │
+│                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────────┐  │
+│  │                    WHY TIME MATTERS                                     │  │
+│  │                                                                         │  │
+│  │  • Timestamp correlation: Data from multiple sources must align         │  │
+│  │  • Alarm sequencing: Events must be ordered correctly for root cause    │  │
+│  │  • Historical trends: Time-series databases require accurate time       │  │
+│  │  • Compliance: Industrial standards require traceability                │  │
+│  │  • Stale data detection: Know when readings are too old to trust        │  │
+│  └─────────────────────────────────────────────────────────────────────────┘  │
+│                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────────┐  │
+│  │                   NTP HEALTH CHECK                                      │  │
+│  │                                                                         │  │
+│  │  Lightweight SNTP (RFC 5905) client that periodically checks system     │  │
+│  │  clock against a configurable NTP server.                               │  │
+│  │                                                                         │  │
+│  │      ┌─────────┐         SNTP Query          ┌───────────┐              │  │
+│  │      │ Gateway │ ──────────────────────────► │ NTP Server│              │  │
+│  │      │         │ ◄────────────────────────── │ (pool.ntp)│              │  │
+│  │      └────┬────┘         Response            └───────────┘              │  │
+│  │           │                                                             │  │
+│  │           ▼                                                             │  │
+│  │      Calculate offset = (T2 - T1) - RTT/2                               │  │
+│  │                                                                         │  │
+│  │  Severity: Warning (drift is informational, not blocking)               │  │
+│  │  Exposed via: GET /health includes ntp_sync check result                │  │
+│  └─────────────────────────────────────────────────────────────────────────┘  │
+│                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────────┐  │
+│  │               OPC UA SERVER DRIFT DETECTION                             │  │
+│  │                                                                         │  │
+│  │  Compares SourceTimestamp from OPC UA data change notifications with    │  │
+│  │  gateway's local time.Now() when the notification is received.          │  │
+│  │                                                                         │  │
+│  │      OPC UA Server                    Gateway                           │  │
+│  │      ┌──────────┐                    ┌──────────┐                       │  │
+│  │      │ Ts=14:00:│ ── DataChange ──►  │ Tr=14:00:│                       │  │
+│  │      │    00.000│    Notification    │    00.150│                       │  │
+│  │      └──────────┘                    └──────────┘                       │  │
+│  │                                            │                            │  │
+│  │      drift = Tr - Ts - expected_latency    │                            │  │
+│  │            = 150ms - 50ms = 100ms ahead    │                            │  │
+│  │                                            ▼                            │  │
+│  │      Exposed as Prometheus gauge per device_id                          │  │
+│  └─────────────────────────────────────────────────────────────────────────┘  │
+│                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────────┐  │
+│  │                   STALENESS CALCULATION                                 │  │
+│  │                                                                         │  │
+│  │  DataPoints carry a staleness indicator based on how long since the     │  │
+│  │  last update relative to the expected poll interval.                    │  │
+│  │                                                                         │  │
+│  │  staleness_seconds = time.Since(datapoint.Timestamp)                    │  │
+│  │                                                                         │  │
+│  │  Threshold Rules:                                                       │  │
+│  │  • Fresh: staleness < poll_interval                                     │  │
+│  │  • Stale: staleness >= poll_interval (missed at least one update)       │  │
+│  │  • Very Stale: staleness >= 3 × poll_interval (connection may be down)  │  │
+│  │                                                                         │  │
+│  │  Used by: MQTT publisher to skip stale readings, alerting rules         │  │
+│  └─────────────────────────────────────────────────────────────────────────┘  │
+│                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────────┐  │
+│  │                     PROMETHEUS METRICS                                  │  │
+│  │                                                                         │  │
+│  │  System-level:                                                          │  │
+│  │  • gateway_system_clock_drift_seconds       (gauge)                     │  │
+│  │    Labels: none                                                         │  │
+│  │    Offset between gateway and NTP server in seconds                     │  │
+│  │                                                                         │  │
+│  │  • gateway_system_clock_drift_checks_total  (counter)                   │  │
+│  │    Labels: result={success|failure}                                     │  │
+│  │    Count of NTP check attempts and outcomes                             │  │
+│  │                                                                         │  │
+│  │  Per-device:                                                            │  │
+│  │  • gateway_opcua_clock_drift_seconds        (gauge)                     │  │
+│  │    Labels: device_id                                                    │  │
+│  │    Drift between specific OPC UA server and gateway                     │  │
+│  └─────────────────────────────────────────────────────────────────────────┘  │
+│                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────────┐  │
+│  │                     CONFIGURATION                                       │  │
+│  │                                                                         │  │
+│  │  config.yaml:                                                           │  │
+│  │  ┌─────────────────────────────────────────────────────────────────┐    │  │
+│  │  │ ntp:                                                            │    │  │
+│  │  │   server: "pool.ntp.org"      # NTP server address              │    │  │
+│  │  │   check_interval: 5m          # How often to check              │    │  │
+│  │  │   warning_threshold: 100ms    # Log warning if drift exceeds    │    │  │
+│  │  │   critical_threshold: 1s      # Mark unhealthy if exceeds       │    │  │
+│  │  │   timeout: 5s                 # NTP query timeout               │    │  │
+│  │  └─────────────────────────────────────────────────────────────────┘    │  │
+│  │                                                                         │  │
+│  │  Environment Variables:                                                 │  │
+│  │  • NTP_SERVER          → ntp.server                                     │  │
+│  │  • NTP_CHECK_INTERVAL  → ntp.check_interval                             │  │
+│  │  • NTP_WARNING_THRESHOLD → ntp.warning_threshold                        │  │
+│  │  • NTP_CRITICAL_THRESHOLD → ntp.critical_threshold                      │  │
+│  └─────────────────────────────────────────────────────────────────────────┘  │
+│                                                                               │
+└───────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -2857,7 +3129,16 @@ The embedded Web UI provides runtime device management without requiring a separ
 │  │  │  ├── Tabs: Basic Info, Connection, Tags                         │    │   │
 │  │  │  ├── Protocol-specific fields (Modbus/OPC UA/S7)                │    │   │
 │  │  │  ├── Dynamic tag list with add/remove                           │    │   │
-│  │  │  └── Connection test functionality                              │    │   │
+│  │  │  ├── Connection test functionality                              │    │   │
+│  │  │  └── "Browse" button (OPC UA) → opens BrowseModal               │    │   │
+│  │  └─────────────────────────────────────────────────────────────────┘    │   │
+│  │                                                                         │   │
+│  │  ┌─────────────────────────────────────────────────────────────────┐    │   │
+│  │  │  BrowseModal (OPC UA Address Space Explorer)                    │    │   │
+│  │  │  ├── Tree-view of server address space                          │    │   │
+│  │  │  ├── Lazy-loads children on expand (depth=1 per request)        │    │   │
+│  │  │  ├── Shows NodeClass, DataType, AccessLevel per node            │    │   │
+│  │  │  └── Select Variable node → auto-fills opc_node_id in tag      │    │   │
 │  │  └─────────────────────────────────────────────────────────────────┘    │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                │
@@ -2870,6 +3151,7 @@ The embedded Web UI provides runtime device management without requiring a separ
 │  │    updateDevice(d)     → PUT  /api/devices                              │   │
 │  │    deleteDevice(id)    → DELETE /api/devices?id={id}                    │   │
 │  │    testConnection(d)   → POST /api/test-connection                      │   │
+│  │    browseOPCUA(id,n,d) → GET  /api/browse/{id}?node_id&max_depth       │   │
 │  │    getTopicsOverview() → GET  /api/topics                               │   │
 │  │    listLogContainers() → GET  /api/logs/containers                      │   │
 │  │    getLogs(c, tail)    → GET  /api/logs?container={c}&tail={n}          │   │
@@ -2922,6 +3204,36 @@ The REST API enables programmatic device management and operational monitoring. 
 │  │    Body: Device (device to test)                                        │   │
 │  │    Response: { success: true } or error                                 │   │
 │  │    Note: Validates configuration only, no actual connection             │   │
+│  └─────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                │
+│  ┌─────────────────────────────────────────────────────────────────────────┐   │
+│  │                    OPC UA BROWSE                                        │   │
+│  │                                                                         │   │
+│  │  GET /api/browse/{deviceID}?node_id={id}&max_depth={n}                  │   │
+│  │    Response: BrowseResult (tree of nodes with children)                 │   │
+│  │    Defaults: node_id="" (Objects folder), max_depth=1 (max 5)           │   │
+│  │    Requires: Device must be OPC UA protocol                             │   │
+│  │    Caching: 60s per-endpoint TTL, shared across devices                 │   │
+│  └─────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                │
+│  ┌─────────────────────────────────────────────────────────────────────────┐   │
+│  │                    CERTIFICATE MANAGEMENT (conditional)                 │   │
+│  │                                                                         │   │
+│  │  Only registered when trust_store_path is configured.                   │   │
+│  │                                                                         │   │
+│  │  GET /api/opcua/certificates/trusted                                    │   │
+│  │    Response: { certificates: TrustStoreInfo[], count: int }             │   │
+│  │                                                                         │   │
+│  │  DELETE /api/opcua/certificates/trusted?fingerprint=sha256:...          │   │
+│  │    Response: { status: "removed", fingerprint: "..." }                  │   │
+│  │                                                                         │   │
+│  │  GET /api/opcua/certificates/rejected                                   │   │
+│  │    Response: { certificates: TrustStoreInfo[], count: int }             │   │
+│  │                                                                         │   │
+│  │  POST /api/opcua/certificates/trust                                     │   │
+│  │    Body: { "fingerprint": "sha256:..." }                                │   │
+│  │    Response: { status: "trusted", fingerprint: "..." }                  │   │
+│  │    Action: Moves cert from rejected/ to trusted/ store                  │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                │
 │  ┌─────────────────────────────────────────────────────────────────────────┐   │

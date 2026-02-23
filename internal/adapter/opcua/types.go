@@ -2,6 +2,7 @@
 package opcua
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -56,6 +57,10 @@ type Client struct {
 
 	// Per-tag diagnostic tracking
 	tagDiagnostics sync.Map // map[string]*TagDiagnostic
+
+	// Trust store for server certificate validation (optional, set by pool)
+	trustStore *TrustStore
+	autoTrust  bool
 }
 
 // ClientConfig holds configuration for an OPC UA client.
@@ -199,8 +204,31 @@ type WriteRequest struct {
 
 // BrowseResult contains the result of browsing an OPC UA node.
 type BrowseResult struct {
-	NodeID      string
-	DisplayName string
-	NodeClass   ua.NodeClass
-	Children    []*BrowseResult
+	NodeID        string         `json:"node_id"`
+	DisplayName   string         `json:"display_name"`
+	BrowseName    string         `json:"browse_name"`
+	NodeClass     ua.NodeClass   `json:"node_class"`
+	NodeClassName string         `json:"node_class_name"` // Human-readable node class
+	DataType      string         `json:"data_type,omitempty"`
+	AccessLevel   string         `json:"access_level,omitempty"`
+	HasChildren   bool           `json:"has_children"`
+	Children      []*BrowseResult `json:"children,omitempty"`
+}
+
+// OPCUAClient defines the interface for OPC UA client operations.
+// Used by the connection pool to interact with clients.
+type OPCUAClient interface {
+	Connect(ctx context.Context) error
+	Disconnect() error
+	IsConnected() bool
+	ReadTag(ctx context.Context, tag *domain.Tag) (*domain.DataPoint, error)
+	ReadTags(ctx context.Context, tags []*domain.Tag) ([]*domain.DataPoint, error)
+	WriteTag(ctx context.Context, tag *domain.Tag, value interface{}) error
+	WriteTags(ctx context.Context, writes []TagWrite) []error
+	Browse(ctx context.Context, nodeID string, maxDepth int) (*BrowseResult, error)
+	GetSessionState() SessionState
+	GetStats() map[string]uint64
+	LastUsed() time.Time
+	DeviceID() string
+	SetMetrics(m *metrics.Registry)
 }

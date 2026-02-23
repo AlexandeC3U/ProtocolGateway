@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -24,6 +25,7 @@ import (
 	"github.com/nexus-edge/protocol-gateway/internal/service"
 	"github.com/nexus-edge/protocol-gateway/pkg/logging"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/rs/zerolog"
 )
 
 const (
@@ -129,6 +131,19 @@ func main() {
 	// Register OPC UA protocol
 	protocolManager.RegisterPool(domain.ProtocolOPCUA, opcuaPool)
 	logger.Info().Msg("OPC UA connection pool initialized")
+
+	// Initialize OPC UA trust store for certificate management
+	var opcuaTrustStore *opcua.TrustStore
+	if cfg.OPCUA.TrustStorePath != "" {
+		var err error
+		opcuaTrustStore, err = opcua.NewTrustStore(cfg.OPCUA.TrustStorePath, logger)
+		if err != nil {
+			logger.Warn().Err(err).Msg("Failed to initialize OPC UA trust store, certificate management disabled")
+		} else {
+			logger.Info().Str("path", cfg.OPCUA.TrustStorePath).Msg("OPC UA trust store initialized")
+			opcuaPool.SetTrustStore(opcuaTrustStore, cfg.OPCUA.AutoTrust)
+		}
+	}
 
 	// Create OPC UA subscription adapter for push-based data delivery.
 	// This wraps the pool's SubscribeDevice/UnsubscribeDevice methods
@@ -367,6 +382,24 @@ func main() {
 		apiHandler.TestConnectionHandler(w, r)
 	}))
 
+	// OPC UA Browse endpoint - allows exploring the address space
+	mux.HandleFunc("/api/browse/", apiMiddleware.ReadOnly(func(w http.ResponseWriter, r *http.Request) {
+		handleBrowse(w, r, opcuaPool, deviceManager, logger)
+	}))
+
+	// OPC UA Certificate Trust Store API endpoints
+	if opcuaTrustStore != nil {
+		mux.HandleFunc("/api/opcua/certificates/trusted", apiMiddleware.Secure(func(w http.ResponseWriter, r *http.Request) {
+			handleTrustedCerts(w, r, opcuaTrustStore, logger)
+		}))
+		mux.HandleFunc("/api/opcua/certificates/rejected", apiMiddleware.ReadOnly(func(w http.ResponseWriter, r *http.Request) {
+			handleRejectedCerts(w, r, opcuaTrustStore, logger)
+		}))
+		mux.HandleFunc("/api/opcua/certificates/trust", apiMiddleware.Secure(func(w http.ResponseWriter, r *http.Request) {
+			handleTrustCert(w, r, opcuaTrustStore, logger)
+		}))
+	}
+
 	// Topics / Routes overview (read-only, no auth required)
 	mux.HandleFunc("/api/topics", apiMiddleware.ReadOnly(func(w http.ResponseWriter, r *http.Request) {
 		apiHandler.TopicsOverviewHandler(w, r)
@@ -472,4 +505,186 @@ func (a *opcuaSubscriptionAdapter) Subscribe(ctx context.Context, device *domain
 
 func (a *opcuaSubscriptionAdapter) Unsubscribe(deviceID string) error {
 	return a.pool.UnsubscribeDevice(deviceID)
+}
+
+// handleBrowse handles OPC UA browse requests to explore the address space.
+// GET /api/browse/{deviceID}?node_id=ns=2;s=Demo&max_depth=1
+func handleBrowse(w http.ResponseWriter, r *http.Request, pool *opcua.ConnectionPool, deviceManager *api.DeviceManager, logger zerolog.Logger) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract device ID from path: /api/browse/{deviceID}
+	path := r.URL.Path
+	prefix := "/api/browse/"
+	if !hasPrefix(path, prefix) {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+	deviceID := path[len(prefix):]
+	if deviceID == "" {
+		http.Error(w, "Device ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Get query parameters
+	nodeID := r.URL.Query().Get("node_id")
+	maxDepthStr := r.URL.Query().Get("max_depth")
+	maxDepth := 1
+	if maxDepthStr != "" {
+		if d, err := parseInt(maxDepthStr); err == nil && d > 0 {
+			maxDepth = d
+			if maxDepth > 5 {
+				maxDepth = 5 // Cap at 5 to prevent excessive browsing
+			}
+		}
+	}
+
+	// Get device to verify it's an OPC UA device
+	device, found := deviceManager.GetDevice(deviceID)
+	if !found {
+		http.Error(w, "Device not found", http.StatusNotFound)
+		return
+	}
+
+	if device.Protocol != domain.ProtocolOPCUA {
+		http.Error(w, "Browse is only supported for OPC UA devices", http.StatusBadRequest)
+		return
+	}
+
+	// Ensure device is connected first
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	_, err := pool.GetClient(ctx, device)
+	if err != nil {
+		logger.Error().Err(err).Str("device_id", deviceID).Msg("Failed to get OPC UA client for browse")
+		http.Error(w, fmt.Sprintf("Failed to connect to device: %v", err), http.StatusServiceUnavailable)
+		return
+	}
+
+	// Perform browse
+	result, err := pool.BrowseNodes(ctx, deviceID, nodeID, maxDepth)
+	if err != nil {
+		logger.Error().Err(err).Str("device_id", deviceID).Str("node_id", nodeID).Msg("Browse failed")
+		http.Error(w, fmt.Sprintf("Browse failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Return JSON response
+	w.Header().Set("Content-Type", "application/json")
+	if err := encodeJSON(w, result); err != nil {
+		logger.Error().Err(err).Msg("Failed to encode browse result")
+	}
+}
+
+func hasPrefix(s, prefix string) bool {
+	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+}
+
+func parseInt(s string) (int, error) {
+	var n int
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("invalid number")
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, nil
+}
+
+func encodeJSON(w http.ResponseWriter, v interface{}) error {
+	return json.NewEncoder(w).Encode(v)
+}
+
+// handleTrustedCerts handles GET and DELETE for trusted certificates.
+// GET /api/opcua/certificates/trusted - List all trusted certs
+// DELETE /api/opcua/certificates/trusted?fingerprint=sha256:... - Remove a trusted cert
+func handleTrustedCerts(w http.ResponseWriter, r *http.Request, ts *opcua.TrustStore, logger zerolog.Logger) {
+	switch r.Method {
+	case http.MethodGet:
+		certs, err := ts.ListTrustedCerts()
+		if err != nil {
+			logger.Error().Err(err).Msg("Failed to list trusted certificates")
+			http.Error(w, fmt.Sprintf("Failed to list trusted certificates: %v", err), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		encodeJSON(w, map[string]interface{}{
+			"certificates": certs,
+			"count":        len(certs),
+		})
+
+	case http.MethodDelete:
+		fingerprint := r.URL.Query().Get("fingerprint")
+		if fingerprint == "" {
+			http.Error(w, "fingerprint query parameter is required", http.StatusBadRequest)
+			return
+		}
+		if err := ts.RemoveTrustedCert(fingerprint); err != nil {
+			logger.Error().Err(err).Str("fingerprint", fingerprint).Msg("Failed to remove trusted certificate")
+			http.Error(w, fmt.Sprintf("Failed to remove certificate: %v", err), http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		encodeJSON(w, map[string]string{"status": "removed", "fingerprint": fingerprint})
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleRejectedCerts handles GET for rejected certificates.
+// GET /api/opcua/certificates/rejected - List all rejected certs
+func handleRejectedCerts(w http.ResponseWriter, r *http.Request, ts *opcua.TrustStore, logger zerolog.Logger) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	certs, err := ts.ListRejectedCerts()
+	if err != nil {
+		logger.Error().Err(err).Msg("Failed to list rejected certificates")
+		http.Error(w, fmt.Sprintf("Failed to list rejected certificates: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	encodeJSON(w, map[string]interface{}{
+		"certificates": certs,
+		"count":        len(certs),
+	})
+}
+
+// handleTrustCert handles POST to promote a rejected cert to trusted.
+// POST /api/opcua/certificates/trust with body {"fingerprint": "sha256:..."}
+func handleTrustCert(w http.ResponseWriter, r *http.Request, ts *opcua.TrustStore, logger zerolog.Logger) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Fingerprint string `json:"fingerprint"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Fingerprint == "" {
+		http.Error(w, "fingerprint is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := ts.PromoteCert(req.Fingerprint); err != nil {
+		logger.Error().Err(err).Str("fingerprint", req.Fingerprint).Msg("Failed to promote certificate")
+		http.Error(w, fmt.Sprintf("Failed to promote certificate: %v", err), http.StatusNotFound)
+		return
+	}
+
+	logger.Info().Str("fingerprint", req.Fingerprint).Msg("Certificate promoted to trusted")
+	w.Header().Set("Content-Type", "application/json")
+	encodeJSON(w, map[string]string{"status": "trusted", "fingerprint": req.Fingerprint})
 }

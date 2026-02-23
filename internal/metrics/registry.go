@@ -47,6 +47,10 @@ type Registry struct {
 	ClockDriftChecks  *prometheus.CounterVec   // NTP check results by status (success/error)
 	OPCUAClockDrift   *prometheus.GaugeVec     // Clock drift between OPC UA server and gateway
 
+	// Certificate metrics
+	OPCUACertsTotal   *prometheus.GaugeVec     // Certificate count by store (trusted/rejected)
+	OPCUACertExpiry   *prometheus.GaugeVec     // Days until cert expiry, by fingerprint
+
 	// System metrics
 	GoroutineCount prometheus.Gauge
 	MemoryUsage    prometheus.Gauge
@@ -234,6 +238,20 @@ func NewRegistry() *Registry {
 			Help:      "Clock drift between OPC UA server and gateway in seconds (positive = gateway ahead)",
 		}, []string{"device_id"}),
 
+		// Certificate metrics
+		OPCUACertsTotal: promauto.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "gateway",
+			Subsystem: "opcua",
+			Name:      "certs_total",
+			Help:      "Number of certificates in the trust store by store type",
+		}, []string{"store"}),
+		OPCUACertExpiry: promauto.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "gateway",
+			Subsystem: "opcua",
+			Name:      "cert_expiry_days",
+			Help:      "Days until certificate expiry (negative = already expired)",
+		}, []string{"fingerprint", "subject"}),
+
 		// System metrics
 		GoroutineCount: promauto.NewGauge(prometheus.GaugeOpts{
 			Namespace: "gateway",
@@ -355,4 +373,15 @@ func (r *Registry) RecordClockDrift(offsetSeconds float64, success bool) {
 // RecordOPCUAClockDrift records the clock drift between an OPC UA server and the gateway.
 func (r *Registry) RecordOPCUAClockDrift(deviceID string, driftSeconds float64) {
 	r.OPCUAClockDrift.WithLabelValues(deviceID).Set(driftSeconds)
+}
+
+// UpdateOPCUACertCounts updates the certificate count gauges.
+func (r *Registry) UpdateOPCUACertCounts(trustedCount, rejectedCount int) {
+	r.OPCUACertsTotal.WithLabelValues("trusted").Set(float64(trustedCount))
+	r.OPCUACertsTotal.WithLabelValues("rejected").Set(float64(rejectedCount))
+}
+
+// RecordOPCUACertExpiry records the days until a certificate expires.
+func (r *Registry) RecordOPCUACertExpiry(fingerprint, subject string, daysUntilExpiry int) {
+	r.OPCUACertExpiry.WithLabelValues(fingerprint, subject).Set(float64(daysUntilExpiry))
 }

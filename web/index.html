@@ -588,6 +588,19 @@
                     throw new Error(error || 'Connection test failed');
                 }
                 return res.json();
+            },
+
+            async browseOPCUA(deviceId, nodeId = '', maxDepth = 1) {
+                let url = `/api/browse/${encodeURIComponent(deviceId)}?max_depth=${maxDepth}`;
+                if (nodeId) {
+                    url += `&node_id=${encodeURIComponent(nodeId)}`;
+                }
+                const res = await fetch(url);
+                if (!res.ok) {
+                    const error = await res.text();
+                    throw new Error(error || 'Browse failed');
+                }
+                return res.json();
             }
         };
         
@@ -700,6 +713,186 @@
             );
         }
         
+        // Browse Tree Node Component
+        function BrowseTreeNode({ node, level = 0, onSelect, selectedNodeId }) {
+            const [expanded, setExpanded] = useState(false);
+            const [children, setChildren] = useState(node.children || []);
+            const [loading, setLoading] = useState(false);
+            
+            const isVariable = node.node_class_name === 'Variable';
+            const isSelected = selectedNodeId === node.node_id;
+            
+            const handleExpand = async () => {
+                if (!expanded && node.has_children && children.length === 0) {
+                    setLoading(true);
+                    try {
+                        const result = await api.browseOPCUA(node._deviceId, node.node_id, 1);
+                        // Pass device ID to children for further expansion
+                        const childrenWithContext = (result.children || []).map(child => ({
+                            ...child,
+                            _deviceId: node._deviceId
+                        }));
+                        setChildren(childrenWithContext);
+                    } catch (err) {
+                        console.error('Failed to expand node:', err);
+                    } finally {
+                        setLoading(false);
+                    }
+                }
+                setExpanded(!expanded);
+            };
+            
+            return (
+                <div style={{ marginLeft: level * 16 + 'px' }}>
+                    <div 
+                        className={`browse-node ${isSelected ? 'selected' : ''} ${isVariable ? 'variable' : ''}`}
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            padding: '6px 8px',
+                            borderRadius: '3px',
+                            cursor: isVariable ? 'pointer' : 'default',
+                            background: isSelected ? 'rgba(59, 130, 246, 0.15)' : 'transparent',
+                            border: isSelected ? '1px solid rgba(59, 130, 246, 0.45)' : '1px solid transparent'
+                        }}
+                        onClick={() => isVariable && onSelect(node)}
+                    >
+                        {node.has_children ? (
+                            <span 
+                                style={{ cursor: 'pointer', width: '16px', textAlign: 'center', color: 'var(--muted)' }}
+                                onClick={(e) => { e.stopPropagation(); handleExpand(); }}
+                            >
+                                {loading ? '...' : (expanded ? '▼' : '▶')}
+                            </span>
+                        ) : (
+                            <span style={{ width: '16px' }}></span>
+                        )}
+                        <span style={{ 
+                            fontSize: '11px', 
+                            padding: '2px 6px', 
+                            borderRadius: '3px',
+                            background: isVariable ? 'rgba(245, 158, 11, 0.15)' : 'rgba(59, 130, 246, 0.15)',
+                            color: isVariable ? 'rgba(245, 158, 11, 0.95)' : 'rgba(59, 130, 246, 0.95)',
+                            fontFamily: 'var(--mono)'
+                        }}>
+                            {node.node_class_name || 'Unknown'}
+                        </span>
+                        <span style={{ fontWeight: 500 }}>{node.display_name || node.browse_name || node.node_id}</span>
+                        {isVariable && node.data_type && (
+                            <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({node.data_type})</span>
+                        )}
+                        {isVariable && node.access_level && (
+                            <span style={{ fontSize: '10px', color: 'var(--muted-2)' }}>[{node.access_level}]</span>
+                        )}
+                    </div>
+                    {expanded && children.map((child, idx) => (
+                        <BrowseTreeNode 
+                            key={child.node_id || idx}
+                            node={{...child, _deviceId: node._deviceId}}
+                            level={level + 1}
+                            onSelect={onSelect}
+                            selectedNodeId={selectedNodeId}
+                        />
+                    ))}
+                </div>
+            );
+        }
+
+        // Browse Modal Component
+        function BrowseModal({ deviceId, onSelect, onClose }) {
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState('');
+            const [rootNode, setRootNode] = useState(null);
+            const [selectedNode, setSelectedNode] = useState(null);
+            
+            useEffect(() => {
+                loadRoot();
+            }, [deviceId]);
+            
+            const loadRoot = async () => {
+                setLoading(true);
+                setError('');
+                try {
+                    const result = await api.browseOPCUA(deviceId, '', 2);
+                    setRootNode({...result, _deviceId: deviceId});
+                } catch (err) {
+                    setError(err.message || 'Failed to browse address space');
+                } finally {
+                    setLoading(false);
+                }
+            };
+            
+            const handleSelectNode = (node) => {
+                setSelectedNode(node);
+            };
+            
+            const handleConfirm = () => {
+                if (selectedNode) {
+                    onSelect(selectedNode);
+                    onClose();
+                }
+            };
+            
+            return (
+                <div className="modal-overlay" onClick={onClose}>
+                    <div className="modal" style={{ width: 'min(700px, 95%)' }} onClick={(e) => e.stopPropagation()}>
+                        <div className="modal-header">
+                            <h2 className="modal-title">Browse OPC UA Address Space</h2>
+                            <button className="btn btn-sm" onClick={onClose}>✕</button>
+                        </div>
+                        <div className="modal-body" style={{ maxHeight: '60vh', overflow: 'auto' }}>
+                            {error && <div className="alert alert-error">{error}</div>}
+                            {loading ? (
+                                <div className="loading">
+                                    <span className="spinner"></span>
+                                    <span style={{ marginLeft: '10px' }}>Loading address space...</span>
+                                </div>
+                            ) : rootNode ? (
+                                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '13px' }}>
+                                    <BrowseTreeNode 
+                                        node={rootNode}
+                                        onSelect={handleSelectNode}
+                                        selectedNodeId={selectedNode?.node_id}
+                                    />
+                                </div>
+                            ) : (
+                                <div className="empty-state">No nodes found</div>
+                            )}
+                            
+                            {selectedNode && (
+                                <div style={{ 
+                                    marginTop: '16px', 
+                                    padding: '12px', 
+                                    background: 'var(--surface-2)', 
+                                    borderRadius: 'var(--radius)',
+                                    border: '1px solid var(--border)'
+                                }}>
+                                    <div style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '6px' }}>Selected Node</div>
+                                    <div className="mono" style={{ fontSize: '13px' }}>
+                                        <div><strong>Node ID:</strong> {selectedNode.node_id}</div>
+                                        <div><strong>Display Name:</strong> {selectedNode.display_name}</div>
+                                        {selectedNode.data_type && <div><strong>Data Type:</strong> {selectedNode.data_type}</div>}
+                                        {selectedNode.access_level && <div><strong>Access:</strong> {selectedNode.access_level}</div>}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                        <div className="modal-footer">
+                            <button className="btn" onClick={onClose}>Cancel</button>
+                            <button 
+                                className="btn btn-primary" 
+                                onClick={handleConfirm}
+                                disabled={!selectedNode}
+                            >
+                                Use Selected Node
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+        
         // Device Form Component
         function DeviceForm({ device, onSave, onCancel }) {
             const [formData, setFormData] = useState(device || {
@@ -725,6 +918,8 @@
             const [currentTab, setCurrentTab] = useState('basic');
             const [error, setError] = useState('');
             const [testing, setTesting] = useState(false);
+            const [showBrowseModal, setShowBrowseModal] = useState(false);
+            const [browseTargetTagIndex, setBrowseTargetTagIndex] = useState(null);
             
             const handleChange = (field, value) => {
                 setFormData(prev => ({ ...prev, [field]: value }));
@@ -738,9 +933,11 @@
             };
             
             const handleTagChange = (index, field, value) => {
-                const newTags = [...formData.tags];
-                newTags[index] = { ...newTags[index], [field]: value };
-                setFormData(prev => ({ ...prev, tags: newTags }));
+                setFormData(prev => {
+                    const newTags = [...prev.tags];
+                    newTags[index] = { ...newTags[index], [field]: value };
+                    return { ...prev, tags: newTags };
+                });
             };
             
             const addTag = () => {
@@ -796,6 +993,49 @@
                 } catch (err) {
                     setError(err.message);
                 }
+            };
+
+            const handleBrowseSelect = (node) => {
+                if (browseTargetTagIndex !== null) {
+                    // Batch all tag updates in a single state update to avoid stale closure issues
+                    setFormData(prev => {
+                        const newTags = [...prev.tags];
+                        const tagIndex = browseTargetTagIndex;
+                        const updatedTag = { ...newTags[tagIndex] };
+                        
+                        // Always set the node ID
+                        updatedTag.opc_node_id = node.node_id;
+                        
+                        // Set name if empty
+                        if (node.display_name && !updatedTag.name) {
+                            updatedTag.name = node.display_name;
+                        }
+                        
+                        // Map and set data type
+                        if (node.data_type) {
+                            const dtMap = {
+                                'Boolean': 'bool',
+                                'Int16': 'int16',
+                                'UInt16': 'uint16',
+                                'Int32': 'int32',
+                                'UInt32': 'uint32',
+                                'Int64': 'int64',
+                                'UInt64': 'uint64',
+                                'Float': 'float32',
+                                'Double': 'float64',
+                                'String': 'string'
+                            };
+                            if (dtMap[node.data_type]) {
+                                updatedTag.data_type = dtMap[node.data_type];
+                            }
+                        }
+                        
+                        newTags[tagIndex] = updatedTag;
+                        return { ...prev, tags: newTags };
+                    });
+                }
+                setShowBrowseModal(false);
+                setBrowseTargetTagIndex(null);
             };
             
             return (
@@ -1155,12 +1395,27 @@
                                                 <>
                                                     <div className="form-group">
                                                         <label className="form-label">Node ID</label>
-                                                        <input 
-                                                            className="form-input"
-                                                            value={tag.opc_node_id || ''}
-                                                            onChange={(e) => handleTagChange(index, 'opc_node_id', e.target.value)}
-                                                            placeholder="ns=2;s=Temperature or nsu=http://example.org/;s=Temperature"
-                                                        />
+                                                        <div style={{ display: 'flex', gap: '8px' }}>
+                                                            <input 
+                                                                className="form-input"
+                                                                style={{ flex: 1 }}
+                                                                value={tag.opc_node_id || ''}
+                                                                onChange={(e) => handleTagChange(index, 'opc_node_id', e.target.value)}
+                                                                placeholder="ns=2;s=Temperature or nsu=http://example.org/;s=Temperature"
+                                                            />
+                                                            {formData.id && (
+                                                                <button
+                                                                    type="button"
+                                                                    className="btn btn-sm"
+                                                                    onClick={() => {
+                                                                        setShowBrowseModal(true);
+                                                                        setBrowseTargetTagIndex(index);
+                                                                    }}
+                                                                >
+                                                                    Browse
+                                                                </button>
+                                                            )}
+                                                        </div>
                                                         <small className="form-hint">Supports ns= (index) or nsu= (URI) format. URI format is more stable.</small>
                                                     </div>
                                                     <div className="form-group">
@@ -1264,6 +1519,14 @@
                             Save Device
                         </button>
                     </div>
+                    
+                    {showBrowseModal && formData.id && (
+                        <BrowseModal
+                            deviceId={formData.id}
+                            onSelect={handleBrowseSelect}
+                            onClose={() => { setShowBrowseModal(false); setBrowseTargetTagIndex(null); }}
+                        />
+                    )}
                 </div>
             );
         }

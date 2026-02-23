@@ -116,6 +116,14 @@ func (c *Client) Connect(ctx context.Context) error {
 			c.logger.Warn().Err(err).Msg("Endpoint discovery failed, using manual configuration")
 			opts = secConfig.BuildClientOptions()
 		} else {
+			// Validate server certificate against trust store if configured
+			if c.trustStore != nil && len(endpoint.ServerCertificate) > 0 {
+				if err := c.trustStore.ValidateServerCertificate(endpoint.ServerCertificate, c.autoTrust); err != nil {
+					c.lastError = err
+					c.sessionState = SessionStateError
+					return fmt.Errorf("%w: %v", domain.ErrConnectionFailed, err)
+				}
+			}
 			opts = BuildOptionsFromEndpoint(endpoint, secConfig)
 		}
 	} else {
@@ -954,6 +962,391 @@ func (c *Client) RefreshNamespaceTable(ctx context.Context) error {
 	c.nodeCacheMu.Unlock()
 
 	return c.updateNamespaceTable(ctx)
+}
+
+// Browse explores the OPC UA address space starting from a given node.
+// If nodeID is empty, browsing starts from the Objects folder (i=85).
+// maxDepth controls recursion depth (1 = immediate children only).
+func (c *Client) Browse(ctx context.Context, nodeID string, maxDepth int) (*BrowseResult, error) {
+	if !c.connected.Load() {
+		return nil, domain.ErrConnectionClosed
+	}
+
+	c.mu.Lock()
+	c.lastUsed = time.Now()
+	c.mu.Unlock()
+
+	// Default to Objects folder if no nodeID specified
+	var startNodeID *ua.NodeID
+	var err error
+	if nodeID == "" {
+		startNodeID = ua.NewNumericNodeID(0, 85) // Objects folder
+	} else {
+		startNodeID, err = c.getNodeID(nodeID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid node ID: %w", err)
+		}
+	}
+
+	// Ensure maxDepth is at least 1
+	if maxDepth < 1 {
+		maxDepth = 1
+	}
+
+	return c.browseNode(ctx, startNodeID, maxDepth, 0)
+}
+
+// browseNode recursively browses a node and its children.
+func (c *Client) browseNode(ctx context.Context, nodeID *ua.NodeID, maxDepth, currentDepth int) (*BrowseResult, error) {
+	c.mu.RLock()
+	client := c.client
+	c.mu.RUnlock()
+
+	if client == nil {
+		return nil, domain.ErrConnectionClosed
+	}
+
+	// Read node attributes first
+	result := &BrowseResult{
+		NodeID: nodeID.String(),
+	}
+
+	// Read DisplayName, BrowseName, NodeClass in batch
+	if err := c.readNodeAttributes(ctx, nodeID, result); err != nil {
+		c.logger.Debug().Err(err).Str("node_id", nodeID.String()).Msg("Failed to read node attributes")
+	}
+
+	// For Variable nodes, read DataType and AccessLevel
+	if result.NodeClass == ua.NodeClassVariable {
+		c.readVariableAttributes(ctx, nodeID, result)
+	}
+
+	// Stop recursion if we've reached max depth
+	if currentDepth >= maxDepth {
+		// Check if node has children without fetching them
+		result.HasChildren = c.checkHasChildren(ctx, nodeID)
+		return result, nil
+	}
+
+	// Browse children with HierarchicalReferences
+	children, err := c.browseChildren(ctx, nodeID)
+	if err != nil {
+		c.logger.Debug().Err(err).Str("node_id", nodeID.String()).Msg("Failed to browse children")
+		return result, nil
+	}
+
+	result.HasChildren = len(children) > 0
+
+	// Recursively browse children
+	for _, childRef := range children {
+		childResult, err := c.browseNode(ctx, childRef.NodeID.NodeID, maxDepth, currentDepth+1)
+		if err != nil {
+			c.logger.Debug().Err(err).Str("node_id", childRef.NodeID.NodeID.String()).Msg("Failed to browse child node")
+			continue
+		}
+		result.Children = append(result.Children, childResult)
+	}
+
+	return result, nil
+}
+
+// readNodeAttributes reads DisplayName, BrowseName, and NodeClass for a node.
+func (c *Client) readNodeAttributes(ctx context.Context, nodeID *ua.NodeID, result *BrowseResult) error {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+
+	req := &ua.ReadRequest{
+		MaxAge:             0,
+		TimestampsToReturn: ua.TimestampsToReturnNeither,
+		NodesToRead: []*ua.ReadValueID{
+			{NodeID: nodeID, AttributeID: ua.AttributeIDDisplayName},
+			{NodeID: nodeID, AttributeID: ua.AttributeIDBrowseName},
+			{NodeID: nodeID, AttributeID: ua.AttributeIDNodeClass},
+		},
+	}
+
+	c.mu.RLock()
+	client := c.client
+	c.mu.RUnlock()
+
+	if client == nil {
+		return domain.ErrConnectionClosed
+	}
+
+	resp, err := client.Read(ctx, req)
+	if err != nil {
+		return err
+	}
+
+	// Parse DisplayName
+	if len(resp.Results) > 0 && resp.Results[0].Status == ua.StatusOK {
+		if lt, ok := resp.Results[0].Value.Value().(*ua.LocalizedText); ok && lt != nil {
+			result.DisplayName = lt.Text
+		}
+	}
+
+	// Parse BrowseName
+	if len(resp.Results) > 1 && resp.Results[1].Status == ua.StatusOK {
+		if qn, ok := resp.Results[1].Value.Value().(*ua.QualifiedName); ok && qn != nil {
+			result.BrowseName = qn.Name
+		}
+	}
+
+	// Parse NodeClass
+	if len(resp.Results) > 2 && resp.Results[2].Status == ua.StatusOK {
+		if nc, ok := resp.Results[2].Value.Value().(int32); ok {
+			result.NodeClass = ua.NodeClass(nc)
+			result.NodeClassName = nodeClassToString(result.NodeClass)
+		}
+	}
+
+	return nil
+}
+
+// readVariableAttributes reads DataType and AccessLevel for Variable nodes.
+func (c *Client) readVariableAttributes(ctx context.Context, nodeID *ua.NodeID, result *BrowseResult) {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+
+	req := &ua.ReadRequest{
+		MaxAge:             0,
+		TimestampsToReturn: ua.TimestampsToReturnNeither,
+		NodesToRead: []*ua.ReadValueID{
+			{NodeID: nodeID, AttributeID: ua.AttributeIDDataType},
+			{NodeID: nodeID, AttributeID: ua.AttributeIDAccessLevel},
+		},
+	}
+
+	c.mu.RLock()
+	client := c.client
+	c.mu.RUnlock()
+
+	if client == nil {
+		return
+	}
+
+	resp, err := client.Read(ctx, req)
+	if err != nil {
+		return
+	}
+
+	// Parse DataType
+	if len(resp.Results) > 0 && resp.Results[0].Status == ua.StatusOK {
+		if dtNodeID, ok := resp.Results[0].Value.Value().(*ua.NodeID); ok && dtNodeID != nil {
+			result.DataType = dataTypeNodeIDToString(dtNodeID)
+		}
+	}
+
+	// Parse AccessLevel
+	if len(resp.Results) > 1 && resp.Results[1].Status == ua.StatusOK {
+		if al, ok := resp.Results[1].Value.Value().(uint8); ok {
+			result.AccessLevel = accessLevelToString(ua.AccessLevelType(al))
+		}
+	}
+}
+
+// browseChildren returns the child references of a node using HierarchicalReferences.
+func (c *Client) browseChildren(ctx context.Context, nodeID *ua.NodeID) ([]*ua.ReferenceDescription, error) {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+
+	c.mu.RLock()
+	client := c.client
+	c.mu.RUnlock()
+
+	if client == nil {
+		return nil, domain.ErrConnectionClosed
+	}
+
+	browseReq := &ua.BrowseRequest{
+		RequestedMaxReferencesPerNode: 1000,
+		NodesToBrowse: []*ua.BrowseDescription{
+			{
+				NodeID:          nodeID,
+				BrowseDirection: ua.BrowseDirectionForward,
+				ReferenceTypeID: ua.NewNumericNodeID(0, 33), // HierarchicalReferences
+				IncludeSubtypes: true,
+				NodeClassMask:   uint32(ua.NodeClassObject | ua.NodeClassVariable | ua.NodeClassMethod),
+				ResultMask:      uint32(ua.BrowseResultMaskAll),
+			},
+		},
+	}
+
+	browseResp, err := client.Browse(ctx, browseReq)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(browseResp.Results) == 0 {
+		return nil, nil
+	}
+
+	browseResult := browseResp.Results[0]
+	if browseResult.StatusCode != ua.StatusOK {
+		return nil, fmt.Errorf("browse failed: status code %d", browseResult.StatusCode)
+	}
+
+	refs := browseResult.References
+
+	// Handle continuation point for large result sets
+	for len(browseResult.ContinuationPoint) > 0 {
+		nextReq := &ua.BrowseNextRequest{
+			ReleaseContinuationPoints: false,
+			ContinuationPoints:        [][]byte{browseResult.ContinuationPoint},
+		}
+
+		nextResp, err := client.BrowseNext(ctx, nextReq)
+		if err != nil {
+			c.logger.Warn().Err(err).Msg("BrowseNext failed, returning partial results")
+			break
+		}
+
+		if len(nextResp.Results) > 0 && nextResp.Results[0].StatusCode == ua.StatusOK {
+			refs = append(refs, nextResp.Results[0].References...)
+			browseResult = nextResp.Results[0]
+		} else {
+			break
+		}
+	}
+
+	return refs, nil
+}
+
+// checkHasChildren checks if a node has children without fetching them.
+func (c *Client) checkHasChildren(ctx context.Context, nodeID *ua.NodeID) bool {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+
+	c.mu.RLock()
+	client := c.client
+	c.mu.RUnlock()
+
+	if client == nil {
+		return false
+	}
+
+	browseReq := &ua.BrowseRequest{
+		RequestedMaxReferencesPerNode: 1, // Only need to know if there's at least one
+		NodesToBrowse: []*ua.BrowseDescription{
+			{
+				NodeID:          nodeID,
+				BrowseDirection: ua.BrowseDirectionForward,
+				ReferenceTypeID: ua.NewNumericNodeID(0, 33), // HierarchicalReferences
+				IncludeSubtypes: true,
+				NodeClassMask:   uint32(ua.NodeClassObject | ua.NodeClassVariable | ua.NodeClassMethod),
+				ResultMask:      uint32(ua.BrowseResultMaskNodeClass),
+			},
+		},
+	}
+
+	browseResp, err := client.Browse(ctx, browseReq)
+	if err != nil {
+		return false
+	}
+
+	if len(browseResp.Results) > 0 && browseResp.Results[0].StatusCode == ua.StatusOK {
+		return len(browseResp.Results[0].References) > 0
+	}
+	return false
+}
+
+// nodeClassToString converts NodeClass to human-readable string.
+func nodeClassToString(nc ua.NodeClass) string {
+	switch nc {
+	case ua.NodeClassObject:
+		return "Object"
+	case ua.NodeClassVariable:
+		return "Variable"
+	case ua.NodeClassMethod:
+		return "Method"
+	case ua.NodeClassObjectType:
+		return "ObjectType"
+	case ua.NodeClassVariableType:
+		return "VariableType"
+	case ua.NodeClassReferenceType:
+		return "ReferenceType"
+	case ua.NodeClassDataType:
+		return "DataType"
+	case ua.NodeClassView:
+		return "View"
+	default:
+		return "Unknown"
+	}
+}
+
+// dataTypeNodeIDToString converts a DataType NodeID to a human-readable type name.
+func dataTypeNodeIDToString(nodeID *ua.NodeID) string {
+	if nodeID.Namespace() != 0 {
+		return nodeID.String()
+	}
+
+	switch nodeID.IntID() {
+	case 1:
+		return "Boolean"
+	case 2:
+		return "SByte"
+	case 3:
+		return "Byte"
+	case 4:
+		return "Int16"
+	case 5:
+		return "UInt16"
+	case 6:
+		return "Int32"
+	case 7:
+		return "UInt32"
+	case 8:
+		return "Int64"
+	case 9:
+		return "UInt64"
+	case 10:
+		return "Float"
+	case 11:
+		return "Double"
+	case 12:
+		return "String"
+	case 13:
+		return "DateTime"
+	case 14:
+		return "Guid"
+	case 15:
+		return "ByteString"
+	case 16:
+		return "XmlElement"
+	case 17:
+		return "NodeId"
+	case 19:
+		return "StatusCode"
+	case 21:
+		return "LocalizedText"
+	case 22:
+		return "ExtensionObject"
+	case 24:
+		return "BaseDataType"
+	default:
+		return nodeID.String()
+	}
+}
+
+// accessLevelToString converts AccessLevelType to human-readable string.
+func accessLevelToString(al ua.AccessLevelType) string {
+	var parts []string
+	if al&ua.AccessLevelTypeCurrentRead != 0 {
+		parts = append(parts, "Read")
+	}
+	if al&ua.AccessLevelTypeCurrentWrite != 0 {
+		parts = append(parts, "Write")
+	}
+	if al&ua.AccessLevelTypeHistoryRead != 0 {
+		parts = append(parts, "HistoryRead")
+	}
+	if al&ua.AccessLevelTypeHistoryWrite != 0 {
+		parts = append(parts, "HistoryWrite")
+	}
+	if len(parts) == 0 {
+		return "None"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // statusCodeToQuality converts OPC UA status code to domain quality.
