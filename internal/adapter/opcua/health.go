@@ -384,9 +384,14 @@ func (p *ConnectionPool) reapIdleSessions() {
 				Msg("Closing session")
 			session.client.Disconnect()
 
-			// Remove all device bindings for this session
+			// Remove device bindings ONLY if they still belong to this session.
+			// When a device is modified (endpoint changed), it gets a new binding
+			// in the new session, but the old session still has the old binding.
+			// We must not delete the new binding when reaping the old session.
 			for deviceID := range session.devices {
-				delete(p.devices, deviceID)
+				if binding, exists := p.devices[deviceID]; exists && binding.EndpointKey == epKey {
+					delete(p.devices, deviceID)
+				}
 			}
 			delete(p.sessions, epKey)
 		}

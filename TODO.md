@@ -39,7 +39,7 @@ Items are organized by priority. Each item notes what exists today vs what's mis
 
 ---
 
-### 11. OPC UA Type System Fidelity
+### 11. OPC UA Type System Fidelity - planned for V2
 
 **Status**: Currently flattens all OPC UA values via `v.Value()` to basic Go types. Loses array types, LocalizedText, ExtensionObjects, Enums, structured types.
 

@@ -50,6 +50,9 @@ type ConnectionConfig struct {
 	OPCAutoSelectEndpoint bool   `yaml:"opc_auto_select_endpoint"`
 	OPCApplicationName    string `yaml:"opc_application_name"`
 	OPCApplicationURI     string `yaml:"opc_application_uri"`
+	OPCUseSubscriptions   *bool  `yaml:"opc_use_subscriptions"`
+	OPCPublishInterval    string `yaml:"opc_publish_interval"`
+	OPCSamplingInterval   string `yaml:"opc_sampling_interval"`
 
 	// S7
 	S7Rack int `yaml:"s7_rack"`
@@ -192,6 +195,24 @@ func convertDeviceConfig(dc DeviceConfig) (*domain.Device, error) {
 		}
 	}
 
+	// Parse OPC UA subscription intervals
+	var opcPublishInterval time.Duration
+	if dc.Connection.OPCPublishInterval != "" {
+		var err error
+		opcPublishInterval, err = time.ParseDuration(dc.Connection.OPCPublishInterval)
+		if err != nil {
+			return nil, fmt.Errorf("invalid opc_publish_interval: %w", err)
+		}
+	}
+	var opcSamplingInterval time.Duration
+	if dc.Connection.OPCSamplingInterval != "" {
+		var err error
+		opcSamplingInterval, err = time.ParseDuration(dc.Connection.OPCSamplingInterval)
+		if err != nil {
+			return nil, fmt.Errorf("invalid opc_sampling_interval: %w", err)
+		}
+	}
+
 	// Convert tags
 	tags := make([]domain.Tag, 0, len(dc.Tags))
 	for _, tc := range dc.Tags {
@@ -247,6 +268,9 @@ func convertDeviceConfig(dc DeviceConfig) (*domain.Device, error) {
 			OPCAutoSelectEndpoint: dc.Connection.OPCAutoSelectEndpoint,
 			OPCApplicationName:    dc.Connection.OPCApplicationName,
 			OPCApplicationURI:     dc.Connection.OPCApplicationURI,
+			OPCUseSubscriptions:   opcUseSubscriptions(dc),
+			OPCPublishInterval:    opcPublishInterval,
+			OPCSamplingInterval:   opcSamplingInterval,
 
 			// S7
 			S7Rack: dc.Connection.S7Rack,
@@ -400,6 +424,9 @@ func convertToDeviceConfig(device *domain.Device) DeviceConfig {
 			OPCAutoSelectEndpoint: device.Connection.OPCAutoSelectEndpoint,
 			OPCApplicationName:    device.Connection.OPCApplicationName,
 			OPCApplicationURI:     device.Connection.OPCApplicationURI,
+			OPCUseSubscriptions:   boolPtr(device.Connection.OPCUseSubscriptions),
+			OPCPublishInterval:    durationToString(device.Connection.OPCPublishInterval),
+			OPCSamplingInterval:   durationToString(device.Connection.OPCSamplingInterval),
 
 			// S7
 			S7Rack: device.Connection.S7Rack,
@@ -450,4 +477,27 @@ func convertToTagConfig(tag *domain.Tag) TagConfig {
 		// S7
 		S7Address: tag.S7Address,
 	}
+}
+
+// durationToString converts a duration to string, returning empty string for zero.
+func durationToString(d time.Duration) string {
+	if d == 0 {
+		return ""
+	}
+	return d.String()
+}
+
+// opcUseSubscriptions resolves the OPCUseSubscriptions setting.
+// If explicitly set in YAML, use that value. If absent (nil), default to true for OPC UA devices.
+func opcUseSubscriptions(dc DeviceConfig) bool {
+	if dc.Connection.OPCUseSubscriptions != nil {
+		return *dc.Connection.OPCUseSubscriptions
+	}
+	// Default to true for OPC UA protocol
+	return domain.Protocol(dc.Protocol) == domain.ProtocolOPCUA
+}
+
+// boolPtr returns a pointer to a bool value.
+func boolPtr(b bool) *bool {
+	return &b
 }

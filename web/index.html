@@ -995,13 +995,27 @@
                                         </div>
                                         <div className="form-group">
                                             <label className="form-label">Password</label>
-                                            <input 
+                                            <input
                                                 className="form-input"
                                                 type="password"
                                                 value={formData.connection.opc_password || ''}
                                                 onChange={(e) => handleConnectionChange('opc_password', e.target.value)}
                                             />
                                         </div>
+                                    </div>
+                                    <div className="form-group" style={{marginTop: '8px'}}>
+                                        <label className="form-label" style={{display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer'}}>
+                                            <input
+                                                type="checkbox"
+                                                checked={formData.connection.opc_use_subscriptions !== false}
+                                                onChange={(e) => handleConnectionChange('opc_use_subscriptions', e.target.checked)}
+                                                style={{width: '16px', height: '16px'}}
+                                            />
+                                            Use Subscriptions (Push Mode)
+                                        </label>
+                                        <span style={{fontSize: '11px', color: 'rgba(255,255,255,0.4)', marginTop: '2px', display: 'block'}}>
+                                            Server pushes data changes instead of polling. More efficient for slow-changing values.
+                                        </span>
                                     </div>
                                 </>
                             )}

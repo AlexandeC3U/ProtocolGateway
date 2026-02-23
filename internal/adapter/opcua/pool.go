@@ -249,6 +249,22 @@ func (p *ConnectionPool) GetClient(ctx context.Context, device *domain.Device) (
 
 	epKey := endpointKey(device, p.config)
 
+	// If device already has a binding to a DIFFERENT endpoint, remove it from the old session.
+	// This happens when a device's connection config is modified (e.g., port changes).
+	if oldBinding, exists := p.devices[device.ID]; exists && oldBinding.EndpointKey != epKey {
+		if oldSession, sessionExists := p.sessions[oldBinding.EndpointKey]; sessionExists {
+			oldSession.mu.Lock()
+			delete(oldSession.devices, device.ID)
+			oldSession.mu.Unlock()
+			p.logger.Debug().
+				Str("device_id", device.ID).
+				Str("old_endpoint", oldBinding.EndpointKey[:min(len(oldBinding.EndpointKey), 50)]).
+				Str("new_endpoint", epKey[:min(len(epKey), 50)]).
+				Msg("Device moved to different endpoint, removed from old session")
+		}
+		delete(p.devices, device.ID)
+	}
+
 	// Check if we already have a session for this endpoint
 	if session, exists := p.sessions[epKey]; exists {
 		return p.getClientFromExistingSession(ctx, session, device, epKey)

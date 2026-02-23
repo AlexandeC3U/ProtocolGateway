@@ -175,7 +175,7 @@ type ConnectionConfig struct {
 	// When true, the server pushes data changes to the client, which is more efficient
 	// for slow-changing values. Requires OPCPublishInterval and OPCSamplingInterval.
 	// Falls back to polling if subscription setup fails.
-	OPCUseSubscriptions bool `json:"opc_use_subscriptions,omitempty" yaml:"opc_use_subscriptions,omitempty"`
+	OPCUseSubscriptions bool `json:"opc_use_subscriptions" yaml:"opc_use_subscriptions"`
 
 	// === S7 (Siemens) Settings ===
 
