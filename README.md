@@ -1,4 +1,4 @@
-# Protocol Gateway
+# Protocol Gateway V2
 
 ![Go](https://img.shields.io/badge/Go-1.22-00ADD8?logo=go&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)

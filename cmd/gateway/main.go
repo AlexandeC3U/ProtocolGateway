@@ -62,6 +62,9 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Start system metrics collector (goroutines, memory)
+	metricsRegistry.StartSystemMetricsCollector(ctx, 15*time.Second)
+
 	// Initialize MQTT publisher
 	mqttPublisher, err := mqtt.NewPublisher(mqtt.Config{
 		BrokerURL:      cfg.MQTT.BrokerURL,

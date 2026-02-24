@@ -4,7 +4,7 @@ devices:
       name: Demo
       protocol: opcua
       enabled: true
-      uns_prefix: plant1/area1/line1
+      uns_prefix: plant1/area1/line2
       poll_interval: 10s
       connection:
         host: nexus-opcua-sim

@@ -396,6 +396,19 @@ func (s *PollingService) ReplaceDevice(ctx context.Context, device *domain.Devic
 			dp.stopOnce.Do(func() {
 				close(dp.stopChan)
 			})
+
+			// Wait for the old poller to stop (with timeout to avoid deadlock)
+			deadline := time.Now().Add(5 * time.Second)
+			for dp.running.Load() && time.Now().Before(deadline) {
+				time.Sleep(10 * time.Millisecond)
+			}
+
+			if dp.running.Load() {
+				s.logger.Warn().
+					Str("device_id", device.ID).
+					Msg("Timeout waiting for old poller to stop, forcing restart")
+				dp.running.Store(false)
+			}
 		}
 
 		// Create a new stop channel and reset the once guard for the restart

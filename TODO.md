@@ -447,3 +447,40 @@ Device Config Page
 **v3**: Scheduled re-browse for drift detection (new nodes appeared, old nodes removed)
 
 ---
+
+### 21. Modbus-Specific Metrics - planned for V2
+
+**Status**: Not implemented. S7 and OPC UA have protocol-specific metrics, but Modbus does not.
+
+**What exists**:
+- Generic polling/connection metrics capture Modbus activity via labels (`protocol="modbus"`)
+- Full Modbus adapter implementation (`internal/adapter/modbus/`)
+- Modbus exception error types defined (`internal/domain/errors.go`)
+
+**What's missing**:
+- No protocol-specific observability comparable to S7 (device connected, read/write duration, breaker state) and OPC UA (clock drift, certificates)
+- No visibility into Modbus exception codes (illegal function, illegal address, device busy, etc.)
+- No register-type breakdown (holding vs input vs coils vs discrete inputs)
+
+**Proposed metrics** (add to `internal/metrics/registry.go`):
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `gateway_modbus_device_connected` | Gauge | `device_id` | Connection state (1=connected, 0=disconnected) |
+| `gateway_modbus_read_duration_seconds` | Histogram | `device_id`, `register_type` | Read operation latency by register type |
+| `gateway_modbus_write_duration_seconds` | Histogram | `device_id`, `register_type` | Write operation latency |
+| `gateway_modbus_exception_total` | Counter | `device_id`, `exception_code` | Modbus exception responses by code |
+| `gateway_modbus_timeout_total` | Counter | `device_id` | Request timeouts |
+| `gateway_modbus_breaker_state` | Gauge | `device_id` | Circuit breaker state (0=closed, 1=half-open, 2=open) |
+
+**Implementation notes**:
+- Mirror S7 metric patterns for consistency
+- `exception_code` labels: `illegal_function`, `illegal_address`, `illegal_value`, `device_failure`, `acknowledge`, `busy`, `gateway_unavailable`, `gateway_target_failed`
+- `register_type` labels: `holding`, `input`, `coil`, `discrete`
+- Update `internal/adapter/modbus/client.go` to record metrics on read/write operations
+- Add Modbus section to Devices & Industrial Grafana dashboard (`04-devices-industrial.json`)
+- Update `docs/metrics.md` to document new metrics
+
+**Effort**: ~2-3 hours
+
+---

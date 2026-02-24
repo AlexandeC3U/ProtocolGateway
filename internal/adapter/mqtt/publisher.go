@@ -409,6 +409,9 @@ func (p *Publisher) bufferMessage(dataPoint *domain.DataPoint) error {
 	select {
 	case p.messageBuffer <- msg:
 		p.stats.MessagesBuffered.Add(1)
+		if p.metrics != nil {
+			p.metrics.UpdateMQTTBufferSize(len(p.messageBuffer))
+		}
 		return nil
 	default:
 		// Buffer full, drop oldest message
@@ -416,6 +419,9 @@ func (p *Publisher) bufferMessage(dataPoint *domain.DataPoint) error {
 		case <-p.messageBuffer:
 			p.messageBuffer <- msg
 			p.logger.Warn().Msg("Buffer full, dropped oldest message")
+			if p.metrics != nil {
+				p.metrics.UpdateMQTTBufferSize(len(p.messageBuffer))
+			}
 			return nil
 		default:
 			return fmt.Errorf("message buffer full")
@@ -445,6 +451,10 @@ func (p *Publisher) processBuffer() {
 				}
 				cancel()
 				backoff = 100 * time.Millisecond // Reset backoff on success
+				// Update buffer size metric after draining
+				if p.metrics != nil {
+					p.metrics.UpdateMQTTBufferSize(len(p.messageBuffer))
+				}
 			} else {
 				// Re-buffer if not connected (non-blocking to avoid deadlock)
 				select {
@@ -492,6 +502,10 @@ func (p *Publisher) drainBuffer() {
 				}
 				cancel()
 			}
+			// Update buffer size metric during drain
+			if p.metrics != nil {
+				p.metrics.UpdateMQTTBufferSize(len(p.messageBuffer))
+			}
 		case <-timeout:
 			remaining := len(p.messageBuffer)
 			if remaining > 0 {
@@ -499,10 +513,18 @@ func (p *Publisher) drainBuffer() {
 			} else if drained > 0 {
 				p.logger.Info().Int("drained", drained).Msg("Buffer drained successfully")
 			}
+			// Final buffer size update
+			if p.metrics != nil {
+				p.metrics.UpdateMQTTBufferSize(len(p.messageBuffer))
+			}
 			return
 		default:
 			if drained > 0 {
 				p.logger.Debug().Int("drained", drained).Msg("Buffer drained")
+			}
+			// Final buffer size update
+			if p.metrics != nil {
+				p.metrics.UpdateMQTTBufferSize(len(p.messageBuffer))
 			}
 			return
 		}
