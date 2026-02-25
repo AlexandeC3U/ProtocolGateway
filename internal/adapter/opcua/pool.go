@@ -56,6 +56,7 @@ type ConnectionPool struct {
 	logger   zerolog.Logger
 	metrics  *metrics.Registry
 	closed   bool
+	done     chan struct{} // Closed on shutdown to unblock background loops immediately
 	wg       sync.WaitGroup
 
 	// Fleet-Wide Load Shaping
@@ -219,6 +220,7 @@ func NewConnectionPool(config PoolConfig, logger zerolog.Logger, metricsReg *met
 		devices:           make(map[string]*DeviceBinding),
 		logger:            logger.With().Str("component", "opcua-pool").Logger(),
 		metrics:           metricsReg,
+		done:              make(chan struct{}),
 		maxGlobalInFlight: int64(config.MaxGlobalInFlight),
 		brownoutThreshold: config.BrownoutThreshold,
 		browseCacheTTL:    60 * time.Second, // Browse cache expires after 60s
@@ -1036,6 +1038,7 @@ func (p *ConnectionPool) RemoveClient(deviceID string) error {
 func (p *ConnectionPool) Close() error {
 	p.mu.Lock()
 	p.closed = true
+	close(p.done) // Unblock healthCheckLoop and idleReaperLoop immediately
 	for i := range p.priorityQueues {
 		close(p.priorityQueues[i])
 	}
@@ -1049,6 +1052,14 @@ func (p *ConnectionPool) Close() error {
 	var lastErr error
 	for epKey, session := range p.sessions {
 		session.mu.Lock()
+		// Stop subscription manager BEFORE disconnecting client
+		// This ensures notification handlers exit cleanly
+		if session.subscriptionMgr != nil {
+			if err := session.subscriptionMgr.Stop(); err != nil {
+				p.logger.Warn().Err(err).Str("endpoint", epKey[:min(len(epKey), 50)]).Msg("Error stopping subscription manager")
+			}
+			session.subscriptionMgr = nil
+		}
 		if err := session.client.Disconnect(); err != nil {
 			lastErr = err
 			p.logger.Warn().Err(err).Str("endpoint", epKey[:min(len(epKey), 50)]).Msg("Error closing session")

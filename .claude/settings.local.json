@@ -5,7 +5,8 @@
       "Bash(go build:*)",
       "Bash(xargs cat:*)",
       "Bash(go vet:*)",
-      "Bash(make test-ntp:*)"
+      "Bash(make test-ntp:*)",
+      "Bash(wc -l /c/Users/ceulea/Projects/Connector_Gateway/internal/**/*.go)"
     ]
   }
 }

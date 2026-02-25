@@ -352,22 +352,15 @@ func (s *PollingService) ReplaceDevice(ctx context.Context, device *domain.Devic
 			_ = s.subscriptionHandler.Unsubscribe(device.ID)
 		}
 		dp.subscribed = false
-		dp.stopChan = make(chan struct{})
-		dp.stopOnce = sync.Once{}
-		dp.running.Store(false)
+		s.stopAndResetPoller(dp)
 		s.startDevicePoller(dp)
 		return nil
 	}
 	if !wasSubscribed && wantsSubscription {
-		// Switching from polling to subscription
-		if dp.running.Load() {
-			dp.stopOnce.Do(func() {
-				close(dp.stopChan)
-			})
-		}
-		dp.running.Store(false)
-		dp.stopChan = make(chan struct{})
-		dp.stopOnce = sync.Once{}
+		// Switching from polling to subscription — must wait for old poller goroutine
+		// to fully exit before starting subscription, otherwise the old goroutine's
+		// deferred dp.running.Store(false) races with the new subscription's state.
+		s.stopAndResetPoller(dp)
 		s.startDevicePoller(dp) // Will detect OPCUseSubscriptions and delegate
 		return nil
 	}
@@ -377,7 +370,7 @@ func (s *PollingService) ReplaceDevice(ctx context.Context, device *domain.Devic
 			_ = s.subscriptionHandler.Unsubscribe(device.ID)
 		}
 		dp.subscribed = false
-		dp.running.Store(false)
+		s.stopAndResetPoller(dp)
 		s.startDevicePoller(dp) // Will delegate to startDeviceSubscription
 		return nil
 	}
@@ -391,34 +384,39 @@ func (s *PollingService) ReplaceDevice(ctx context.Context, device *domain.Devic
 			Dur("new_interval", device.PollInterval).
 			Msg("Poll interval changed, restarting poller")
 
-		// Stop the old poller goroutine
-		if dp.running.Load() {
-			dp.stopOnce.Do(func() {
-				close(dp.stopChan)
-			})
-
-			// Wait for the old poller to stop (with timeout to avoid deadlock)
-			deadline := time.Now().Add(5 * time.Second)
-			for dp.running.Load() && time.Now().Before(deadline) {
-				time.Sleep(10 * time.Millisecond)
-			}
-
-			if dp.running.Load() {
-				s.logger.Warn().
-					Str("device_id", device.ID).
-					Msg("Timeout waiting for old poller to stop, forcing restart")
-				dp.running.Store(false)
-			}
-		}
-
-		// Create a new stop channel and reset the once guard for the restart
-		dp.stopChan = make(chan struct{})
-		dp.stopOnce = sync.Once{}
-
+		s.stopAndResetPoller(dp)
 		s.startDevicePoller(dp)
 	}
 
 	return nil
+}
+
+// stopAndResetPoller signals the current poller goroutine to stop, waits for it
+// to fully exit (with timeout), then resets stopChan/stopOnce for reuse.
+// This MUST be called before starting a new poller/subscription to prevent the
+// old goroutine's deferred dp.running.Store(false) from racing with new state.
+func (s *PollingService) stopAndResetPoller(dp *devicePoller) {
+	if dp.running.Load() {
+		dp.stopOnce.Do(func() {
+			close(dp.stopChan)
+		})
+
+		// Wait for the old goroutine to stop (with timeout to avoid deadlock)
+		deadline := time.Now().Add(5 * time.Second)
+		for dp.running.Load() && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+
+		if dp.running.Load() {
+			s.logger.Warn().
+				Str("device_id", dp.device.ID).
+				Msg("Timeout waiting for old poller to stop, forcing restart")
+			dp.running.Store(false)
+		}
+	}
+
+	dp.stopChan = make(chan struct{})
+	dp.stopOnce = sync.Once{}
 }
 
 // startDevicePoller starts the polling loop for a device.

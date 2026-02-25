@@ -3,6 +3,7 @@ package opcua
 
 import (
 	"context"
+	"runtime"
 	"time"
 
 	"github.com/nexus-edge/protocol-gateway/internal/domain"
@@ -22,6 +23,7 @@ type PoolStats struct {
 	GlobalInFlight    int64 // Current in-flight operations
 	MaxGlobalInFlight int64 // Max allowed in-flight operations
 	BrownoutMode      bool  // Whether brownout mode is active
+	Goroutines        int   // Current goroutine count (for debugging resource leaks)
 }
 
 // DeviceHealth contains health information for a single device.
@@ -80,6 +82,7 @@ func (p *ConnectionPool) Stats() PoolStats {
 		GlobalInFlight:    p.globalInFlight.Load(),
 		MaxGlobalInFlight: p.maxGlobalInFlight,
 		BrownoutMode:      p.brownoutMode.Load(),
+		Goroutines:        runtime.NumGoroutine(),
 	}
 
 	for _, session := range p.sessions {
@@ -203,6 +206,8 @@ func (p *ConnectionPool) healthCheckLoop() {
 
 	for {
 		select {
+		case <-p.done:
+			return
 		case <-ticker.C:
 			p.mu.RLock()
 			if p.closed {
@@ -312,6 +317,8 @@ func (p *ConnectionPool) idleReaperLoop() {
 
 	for {
 		select {
+		case <-p.done:
+			return
 		case <-ticker.C:
 			p.mu.RLock()
 			if p.closed {
@@ -382,6 +389,14 @@ func (p *ConnectionPool) reapIdleSessions() {
 				Bool("had_subscriptions", session.hasActiveSubscriptions).
 				Str("reason", reason).
 				Msg("Closing session")
+
+			// Stop subscription manager BEFORE disconnecting client
+			// This ensures notification handlers exit cleanly
+			if session.subscriptionMgr != nil {
+				_ = session.subscriptionMgr.Stop()
+				session.subscriptionMgr = nil
+			}
+
 			session.client.Disconnect()
 
 			// Remove device bindings ONLY if they still belong to this session.

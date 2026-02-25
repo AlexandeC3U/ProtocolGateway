@@ -489,6 +489,7 @@ func (sm *SubscriptionManager) updateSubscriptionLocked(device *domain.Device, t
 		MonitoredItems:  make(map[string]uint32),
 		LastValues:      make(map[string]*domain.DataPoint),
 		notifyCh:        make(chan *opcua.PublishNotificationData, 100),
+		doneCh:          make(chan struct{}),
 		publishInterval: config.PublishInterval,
 	}
 

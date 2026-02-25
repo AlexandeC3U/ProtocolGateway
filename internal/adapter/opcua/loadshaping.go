@@ -3,7 +3,6 @@ package opcua
 
 import (
 	"context"
-	"time"
 
 	"github.com/nexus-edge/protocol-gateway/internal/domain"
 	"github.com/sony/gobreaker"
@@ -40,13 +39,6 @@ func (p *ConnectionPool) priorityQueueProcessor() {
 	defer p.wg.Done()
 
 	for {
-		p.mu.RLock()
-		closed := p.closed
-		p.mu.RUnlock()
-		if closed {
-			return
-		}
-
 		// Process in priority order: safety (2), control (1), telemetry (0)
 		var req *opRequest
 		select {
@@ -60,8 +52,8 @@ func (p *ConnectionPool) priorityQueueProcessor() {
 				case req = <-p.priorityQueues[PrioritySafety]:
 				case req = <-p.priorityQueues[PriorityControl]:
 				case req = <-p.priorityQueues[PriorityTelemetry]:
-				case <-time.After(100 * time.Millisecond):
-					continue
+				case <-p.done:
+					return
 				}
 			}
 		}
@@ -174,6 +166,15 @@ func (p *ConnectionPool) checkGlobalLoadAndQueueWithSession(ctx context.Context,
 
 	if current >= p.maxGlobalInFlight {
 		// Hard limit reached - queue the operation
+
+		// Defense-in-depth: re-check closed before sending to priority queue.
+		// Shutdown ordering (pollingSvc.Stop → pool.Close) should prevent this,
+		// but an explicit check eliminates send-on-closed-channel panic if
+		// ordering is ever changed or a caller outlives its expected lifetime.
+		if p.closed {
+			return domain.ErrServiceStopped
+		}
+
 		// INCREMENT BEFORE QUEUEING - this fixes the accounting bug
 		p.globalInFlight.Add(1)
 		if session != nil {

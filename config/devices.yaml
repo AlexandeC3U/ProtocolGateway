@@ -54,3 +54,14 @@ devices:
           byte_order: big_endian
           register_count: 1
           opc_node_id: ns=2;s=Demo.Temperature
+        - id: tag-1772005052224
+          name: Status
+          data_type: string
+          scale_factor: 1
+          topic_suffix: Status
+          enabled: false
+          access_mode: read
+          register_type: holding_register
+          byte_order: big_endian
+          register_count: 1
+          opc_node_id: ns=2;s=Demo.Status

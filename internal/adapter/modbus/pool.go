@@ -21,6 +21,7 @@ type ConnectionPool struct {
 	logger  zerolog.Logger
 	metrics *metrics.Registry
 	closed  bool
+	done    chan struct{} // Closed on shutdown to unblock background loops immediately
 	wg      sync.WaitGroup
 }
 
@@ -57,6 +58,7 @@ func NewConnectionPool(config PoolConfig, logger zerolog.Logger, metricsReg *met
 		clients: make(map[string]*pooledClient),
 		logger:  logger.With().Str("component", "modbus-pool").Logger(),
 		metrics: metricsReg,
+		done:    make(chan struct{}),
 	}
 
 	// Start background health checker
@@ -480,6 +482,7 @@ func (p *ConnectionPool) RemoveClient(deviceID string) error {
 func (p *ConnectionPool) Close() error {
 	p.mu.Lock()
 	p.closed = true
+	close(p.done) // Unblock healthCheckLoop and idleReaperLoop immediately
 	p.mu.Unlock()
 
 	// Wait for background goroutines to stop
@@ -513,6 +516,8 @@ func (p *ConnectionPool) healthCheckLoop() {
 
 	for {
 		select {
+		case <-p.done:
+			return
 		case <-ticker.C:
 			p.mu.RLock()
 			if p.closed {
@@ -611,6 +616,8 @@ func (p *ConnectionPool) idleReaperLoop() {
 
 	for {
 		select {
+		case <-p.done:
+			return
 		case <-ticker.C:
 			p.mu.RLock()
 			if p.closed {
