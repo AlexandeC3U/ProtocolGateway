@@ -1,41 +1,4 @@
----
-layout: home
-
-hero:
-  name: "Protocol Gateway"
-  text: "Industrial IoT Protocol Bridge"
-  tagline: "Bridges Modbus TCP/RTU, OPC UA and Siemens S7 to modern MQTT/UNS infrastructure — with circuit breakers, Prometheus metrics and full Grafana observability."
-  actions:
-    - theme: brand
-      text: Gateway Service →
-      link: /gateway-service
-    - theme: alt
-      text: Protocol Adapters
-      link: /protocol-adapters
-    - theme: alt
-      text: Architecture
-      link: /ARCHITECTURE
-
-features:
-  - icon: 🔌
-    title: Multi-Protocol Support
-    details: Industrial-grade adapters for Modbus TCP/RTU, OPC UA and Siemens S7 with connection pooling and per-device circuit breakers.
-  - icon: 📡
-    title: Unified Namespace (MQTT)
-    details: Normalises all device readings and publishes to EMQX following the UNS pattern. Every tag gets a consistent JSON payload with value, unit, quality and timestamp.
-  - icon: 🔄
-    title: Bidirectional Communication
-    details: Write commands arrive via MQTT and are routed back to target devices over the native protocol. Responses confirm success or surface errors.
-  - icon: 📊
-    title: Full Observability
-    details: Built-in Prometheus metrics and auto-provisioned Grafana dashboards covering connections, polls, MQTT throughput and device health.
-  - icon: 🛡️
-    title: Resilience Patterns
-    details: Circuit breakers, exponential back-off retries and graceful degradation keep the gateway operational even when individual devices fail.
-  - icon: 🐳
-    title: Docker Native
-    details: Multi-stage build, non-root runtime, full Compose stack — EMQX, Prometheus and Grafana included and auto-configured.
----
+# Protocol Gateway
 
 ![Go](https://img.shields.io/badge/Go-1.22-00ADD8?logo=go&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)
