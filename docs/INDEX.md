@@ -1,4 +1,41 @@
-# Protocol Gateway
+---
+layout: home
+
+hero:
+  name: "Protocol Gateway"
+  text: "Industrial IoT Protocol Bridge"
+  tagline: "Bridges Modbus TCP/RTU, OPC UA and Siemens S7 to modern MQTT/UNS infrastructure — with circuit breakers, Prometheus metrics and full Grafana observability."
+  actions:
+    - theme: brand
+      text: Gateway Service →
+      link: /gateway-service
+    - theme: alt
+      text: Protocol Adapters
+      link: /protocol-adapters
+    - theme: alt
+      text: Architecture
+      link: /ARCHITECTURE
+
+features:
+  - icon: 🔌
+    title: Multi-Protocol Support
+    details: Industrial-grade adapters for Modbus TCP/RTU, OPC UA and Siemens S7 with connection pooling and per-device circuit breakers.
+  - icon: 📡
+    title: Unified Namespace (MQTT)
+    details: Normalises all device readings and publishes to EMQX following the UNS pattern. Every tag gets a consistent JSON payload with value, unit, quality and timestamp.
+  - icon: 🔄
+    title: Bidirectional Communication
+    details: Write commands arrive via MQTT and are routed back to target devices over the native protocol. Responses confirm success or surface errors.
+  - icon: 📊
+    title: Full Observability
+    details: Built-in Prometheus metrics and auto-provisioned Grafana dashboards covering connections, polls, MQTT throughput and device health.
+  - icon: 🛡️
+    title: Resilience Patterns
+    details: Circuit breakers, exponential back-off retries and graceful degradation keep the gateway operational even when individual devices fail.
+  - icon: 🐳
+    title: Docker Native
+    details: Multi-stage build, non-root runtime, full Compose stack — EMQX, Prometheus and Grafana included and auto-configured.
+---
 
 ![Go](https://img.shields.io/badge/Go-1.22-00ADD8?logo=go&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)
@@ -70,15 +107,6 @@ graph TD
     Prom -->|"Scrape :8080/metrics"| Metrics
     Graf -->|"Query"| Prom
 ```
-
-## Documentation
-
-| Section | Description |
-|---|---|
-| [Gateway Service](./gateway-service.md) | Core service: polling engine, command handler, REST API, Web UI, device management, configuration |
-| [Protocol Adapters](./protocol-adapters.md) | Modbus TCP/RTU, OPC UA, Siemens S7 adapters, MQTT publisher — connection pools, circuit breakers, data conversion |
-| [Docker & Infrastructure](./docker-infrastructure.md) | Docker Compose stack, container architecture, Prometheus, Grafana, OPC UA simulator |
-| [Architecture](./ARCHITECTURE.md) | Complete and detailed architecture of the entire project |
 
 ## Tech Stack
 
