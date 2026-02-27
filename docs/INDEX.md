@@ -1,195 +1,169 @@
-# Protocol Gateway
+# Protocol Gateway — Documentation
 
-![Go](https://img.shields.io/badge/Go-1.22-00ADD8?logo=go&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)
-![MQTT](https://img.shields.io/badge/MQTT-EMQX_5.5-660066)
-![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus&logoColor=white)
-![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana&logoColor=white)
-![OPC UA](https://img.shields.io/badge/OPC_UA-00539B)
-![Modbus](https://img.shields.io/badge/Modbus_TCP/RTU-4B8BBE)
-![Siemens S7](https://img.shields.io/badge/Siemens_S7-009999)
 
-## Project Summary
+---
 
-The Protocol Gateway is an industrial-grade bridge between heterogeneous automation devices (PLCs, sensors, SCADA systems) and modern IT infrastructure. It polls data from devices speaking **Modbus TCP/RTU**, **OPC UA**, and **Siemens S7** protocols, converts the readings into a normalized format, and publishes them to an **MQTT broker** (EMQX) following the **Unified Namespace (UNS)** pattern. It also supports bidirectional communication — write commands arrive via MQTT and are routed back to the target device. A built-in Web UI provides device management, topic inspection, and container log viewing, while Prometheus metrics and Grafana dashboards give full observability.
+## Overview
 
-## High-Level Architecture
+The Protocol Gateway is an industrial-grade data acquisition system that bridges heterogeneous automation devices (Modbus TCP/RTU, OPC UA, Siemens S7) to modern IT infrastructure via MQTT, following the **Unified Namespace (UNS)** pattern. Built in Go with Clean Architecture, it features per-device connection pooling, multi-tier circuit breakers, batch read optimization, priority-based load shaping, and a real-time Web UI — all packaged in a ~25MB container image.
 
-```mermaid
-graph TD
-    subgraph "Industrial Devices"
-        ModbusDev["Modbus TCP/RTU\nDevices"]
-        OPCUADev["OPC UA\nServers / PLCs"]
-        S7Dev["Siemens S7\nPLCs"]
-    end
-
-    subgraph "Protocol Gateway (Go)"
-        PM["Protocol Manager"]
-        ModPool["Modbus Pool\n+ Circuit Breakers"]
-        OPCPool["OPC UA Pool\n+ Load Shaping\n+ Subscriptions"]
-        S7Pool["S7 Pool\n+ Circuit Breakers"]
-        PollSvc["Polling Service\n(Worker Pool)"]
-        CmdHandler["Command Handler\n(MQTT → Device writes)"]
-        MQTTPub["MQTT Publisher\n+ Buffering"]
-        API["HTTP API\n+ Web UI"]
-        Health["Health Checker\n(K8s probes)"]
-        Metrics["Prometheus\nMetrics Registry"]
-    end
-
-    subgraph "MQTT & Monitoring"
-        EMQX["EMQX Broker\n:1883"]
-        Prom["Prometheus\n:9090"]
-        Graf["Grafana\n:3000"]
-    end
-
-    subgraph "Clients"
-        WebUI["Web Browser\n:8080"]
-        MQTTClient["MQTT Subscribers\n(SCADA, dashboards)"]
-    end
-
-    ModbusDev -->|"Modbus TCP/RTU"| ModPool
-    OPCUADev -->|"OPC UA Binary"| OPCPool
-    S7Dev -->|"ISO-on-TCP :102"| S7Pool
-
-    ModPool --> PM
-    OPCPool --> PM
-    S7Pool --> PM
-
-    PM -->|"ReadTags()"| PollSvc
-    PM -->|"WriteTag()"| CmdHandler
-    PollSvc -->|"Publish batch"| MQTTPub
-    MQTTPub -->|"MQTT publish"| EMQX
-    EMQX -->|"$nexus/cmd/+/+/set"| CmdHandler
-    CmdHandler -->|"Response"| EMQX
-    EMQX --> MQTTClient
-
-    API -->|"Device CRUD"| PollSvc
-    WebUI -->|"HTTP :8080"| API
-    Health -->|"/health, /health/live\n/health/ready"| API
-    Metrics -->|"/metrics"| API
-    Prom -->|"Scrape :8080/metrics"| Metrics
-    Graf -->|"Query"| Prom
+```
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                              SYSTEM ARCHITECTURE                                 │
+│                                                                                  │
+│   INDUSTRIAL FLOOR                                                               │
+│   ┌──────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐                            │
+│   │ Siemens  │  │ Modbus  │  │ OPC UA  │  │ Modbus  │                            │
+│   │ S7-1500  │  │ Sensor  │  │ Kepware │  │  RTU    │                            │
+│   └────┬─────┘  └────┬────┘  └────┬────┘  └────┬────┘                            │
+│        │ :102        │ :502       │ :4840      │ serial                          │
+│        └─────────────┴────────────┴────────────┘                                 │
+│                           │                                                      │
+│  ─────────────────────────┼───────────────────────────────────────────────────   │
+│                           ▼                                                      │
+│   PROTOCOL GATEWAY                                                               │
+│   ┌──────────────────────────────────────────────────────────────────────────┐   │
+│   │                                                                          │   │
+│   │   ┌──────────┐  ┌──────────┐  ┌──────────┐       ┌──────────────────┐    │   │
+│   │   │ S7 Pool  │  │ Modbus   │  │ OPC UA   │       │  MQTT Publisher  │    │   │
+│   │   │ per-dev  │  │   Pool   │  │   Pool   │       │  buffer: 10,000  │    │   │
+│   │   │ breakers │  │ per-dev  │  │ per-endpt│       │  QoS 0/1/2       │    │   │
+│   │   │ batch:20 │  │ breakers │  │ sessions │       │  auto-reconnect  │    │   │
+│   │   └─────┬────┘  │ batching │  │ load-shp │       └────────┬─────────┘    │   │
+│   │         │       └─────┬────┘  └─────┬────┘                │              │   │
+│   │         └─────────────┴─────────────┘                     │              │   │
+│   │                       │                                   │              │   │
+│   │              ┌────────▼────────┐                          │              │   │
+│   │              │ProtocolManager  │                          │              │   │
+│   │              │ route by proto  │                          │              │   │
+│   │              └────────┬────────┘                          │              │   │
+│   │                       │                                   │              │   │
+│   │         ┌─────────────┴──────────────┐                    │              │   │
+│   │         │      PollingService        │────────────────────┘              │   │
+│   │         │  workers: 10  jitter: 10%  │                                   │   │
+│   │         │  back-pressure: skip poll  │                                   │   │
+│   │         └─────────────┬──────────────┘                                   │   │
+│   │                       │                                                  │   │
+│   │         ┌─────────────┴──────────────┐                                   │   │
+│   │         │     CommandHandler         │  MQTT cmd/+/+/set -> WriteTag     │   │
+│   │         │  rate-limited, queue:1000  │                                   │   │
+│   │         └────────────────────────────┘                                   │   │
+│   │                                                                          │   │
+│   │   ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐                 │   │
+│   │   │  Health  │  │ Metrics  │  │  HTTP    │  │  Web UI  │                 │   │
+│   │   │ Checker  │  │ Registry │  │  :8080   │  │  React   │                 │   │
+│   │   └──────────┘  └──────────┘  └──────────┘  └──────────┘                 │   │
+│   │                                                                          │   │
+│   └──────────────────────────────────────────────────────────────────────────┘   │
+│                           │                                                      │
+│  ─────────────────────────┼───────────────────────────────────────────────────   │
+│                           ▼                                                      │
+│   MQTT BROKER  (EMQX / HiveMQ / Mosquitto)                                       │
+│   UNS topics: plant/area/line/device/tag                                         │
+│                           │                                                      │
+│  ─────────────────────────┼───────────────────────────────────────────────────   │
+│                           ▼                                                      │
+│   IT INFRASTRUCTURE                                                              │
+│   ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐                         │
+│   │InfluxDB  │  │  SCADA   │  │   MES    │  │Analytics │                         │
+│   │Historian │  │  System  │  │  System  │  │ Platform │                         │
+│   └──────────┘  └──────────┘  └──────────┘  └──────────┘                         │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Tech Stack
+---
 
-| Layer | Technology | Version | Notes |
-|---|---|---|---|
-| Language | Go | 1.22 | Single statically-linked binary |
-| MQTT Broker | EMQX | 5.5 | Clusterable; dashboard on :18083 |
-| MQTT Client | eclipse/paho.mqtt.golang | 1.4.3 | Auto-reconnect, QoS 0/1/2 |
-| Modbus | goburrow/modbus | 0.1.0 | TCP + RTU; not thread-safe (serialized with mutex) |
-| OPC UA | gopcua/opcua | 0.5.3 | Sessions, security, subscriptions |
-| Siemens S7 | robinson/gos7 | latest | ISO-on-TCP :102, rack/slot addressing |
-| Circuit Breaker | sony/gobreaker | 0.5.0 | Per-device fault isolation |
-| Config | spf13/viper | 1.18.2 | YAML + env var override |
-| Logging | rs/zerolog | 1.32.0 | Structured JSON + console |
-| Metrics | prometheus/client_golang | 1.19.0 | Counters, gauges, histograms |
-| Monitoring | Prometheus + Grafana | 2.50 / 10.3 | Auto-provisioned dashboards |
-| Container | Docker + Compose | v2 | Multi-stage build, non-root user |
-| OPC UA Sim | Python asyncua | — | Local dev/test simulator |
+## Table of Contents
+
+| # | Chapter | File | Description |
+|---|---------|------|-------------|
+| 1 | [Executive Summary](pages/summary.md) | `summary.md` | Purpose, key capabilities, design philosophy |
+| 2 | [System Overview](pages/system_overview.md) | `system_overview.md` | High-level architecture, technology stack, dependency graph |
+| 3 | [Architectural Principles](pages/architectural_principles.md) | `architectural_principles.md` | Clean Architecture, interface segregation, dependency inversion |
+| 4 | [Layer Architecture](pages/layer_architecture.md) | `layer_architecture.md` | Domain layer entities, adapter layer structure, file organization |
+| 5 | [Domain Model](pages/domain_model.md) | `domain_model.md` | Validation logic, error taxonomy |
+| 6 | [Protocol Adapters](pages/protocol_adapters.md) | `protocol_adapters.md` | Modbus TCP/RTU, OPC UA, Siemens S7, MQTT Publisher |
+| 7 | [Connection Management](pages/connection_management.md) | `connection_management.md` | Pooling strategies, idle connection reaping, `MaxTTL` |
+| 8 | [Data Flow Architecture](pages/dataflow_architecture.md) | `dataflow_architecture.md` | Read path (polling), write path (commands), worker pool cycling |
+| 9 | [Resilience Patterns](pages/resilience_patterns.md) | `resilience_patterns.md` | Circuit breakers, retry/backoff, graceful degradation, startup |
+| 10 | [Observability Infrastructure](pages/observability_infrastructure.md) | `observability_infrastructure.md` | Prometheus metrics, structured logging, health checks, NTP sync |
+| 11 | [Security Architecture](pages/security_architecture.md) | `security_architecture.md` | TLS, OPC UA security profiles, credential management |
+| 12 | [Deployment Architecture](pages/deployment_architecture.md) | `deployment_architecture.md` | Docker, Docker Compose, Kubernetes reference |
+| 13 | [Web UI Architecture](pages/web_architecture.md) | `web_architecture.md` | React frontend, REST API endpoints |
+| 14 | [Testing Strategy](pages/testing_strategy.md) | `testing_strategy.md` | Test pyramid, simulator infrastructure |
+| 15 | [Standards Compliance](pages/standards_compliance.md) | `standards_compliance.md` | IEC 61158, IEC 62541, UNS, Sparkplug B |
+| 16 | [Appendices](pages/appendices.md) | `appendices.md` | Configuration reference, error codes, dependency inventory |
+| 17 | [Edge Cases & Gotchas](pages/edge_cases.md) | `edge_cases.md` | Operational notes, hot-reload scope, topic sanitization |
+| 18 | [Device Configuration](pages/device_configuration.md) | `device_configuration.md` | YAML example, validation rules |
+| 19 | [Conclusion](pages/conclusion.md) | `conclusion.md` | Summary of architectural achievements |
+
+---
+
+## Quick Reference
+
+| Concern | Where to Look |
+|---------|---------------|
+| Add a new protocol adapter | [Ch. 3](pages/architectural_principles.md) (interfaces), [Ch. 6](pages/protocol_adapters.md) (implementation pattern) |
+| Tune polling performance | [Ch. 8](pages/dataflow_architecture.md) (worker pool), [Ch. 7](pages/connection_management.md) (pooling) |
+| Debug connectivity issues | [Ch. 9](pages/resilience_patterns.md) (circuit breakers), [Ch. 10](pages/observability_infrastructure.md) (metrics) |
+| Configure TLS / security | [Ch. 11](pages/security_architecture.md), [Appendix A](pages/appendices.md) |
+| Deploy to production | [Ch. 12](pages/deployment_architecture.md), [Ch. 17](pages/edge_cases.md) (gotchas) |
+| Understand the domain model | [Ch. 4](pages/layer_architecture.md) (entities), [Ch. 5](pages/domain_model.md) (validation) |
+| Set up monitoring | [Ch. 10](pages/observability_infrastructure.md) (Prometheus, Grafana, alerting) |
+
+---
+
+## Technology Stack
+
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| Runtime | Go 1.22+ | Compiled binary, excellent concurrency |
+| Modbus | `goburrow/modbus` | TCP and RTU support |
+| OPC UA | `gopcua/opcua` | Full client stack with subscriptions |
+| S7 | `robinson/gos7` | ISO-on-TCP for Siemens PLCs |
+| MQTT | `paho.mqtt.golang` | Eclipse Foundation reference client |
+| Circuit Breaker | `sony/gobreaker` | Fault isolation |
+| Configuration | `spf13/viper` | YAML + env var config |
+| Logging | `rs/zerolog` | Zero-allocation structured logging |
+| Metrics | `prometheus/client_golang` | Cloud-native metrics |
+
+---
 
 ## Project Structure
 
 ```
-Connector_Gateway/
-├── cmd/gateway/main.go              ← Entry point: wiring, lifecycle, HTTP server
-├── internal/
-│   ├── domain/                      ← Core types: Device, Tag, DataPoint, Protocol, errors
-│   ├── adapter/
-│   │   ├── config/                  ← YAML config + device file loading
-│   │   ├── modbus/                  ← Modbus TCP/RTU client, pool, conversion
-│   │   ├── opcua/                   ← OPC UA client, pool, subscriptions, load shaping, security
-│   │   ├── s7/                      ← Siemens S7 client, pool, conversion
-│   │   └── mqtt/                    ← MQTT publisher with buffering
-│   ├── service/
-│   │   ├── polling.go               ← Polling engine (worker pool, batch reads)
-│   │   └── command_handler.go       ← Bidirectional MQTT → device write commands
-│   ├── api/
-│   │   ├── handlers.go              ← Middleware: auth, CORS, body size limit
-│   │   ├── runtime.go               ← Docker CLI log provider
-│   │   └── runtime_handlers.go      ← Device CRUD, topics overview, container logs
-│   ├── health/checker.go            ← Health checks with flapping protection, K8s probes
-│   └── metrics/registry.go          ← Prometheus metrics (connections, polls, MQTT, devices)
-├── pkg/logging/logger.go            ← Structured zerolog wrapper
-├── config/
-│   ├── config.yaml                  ← Gateway service config
-│   ├── devices.yaml                 ← Device + tag definitions
-│   ├── prometheus.yml               ← Prometheus scrape config
-│   └── grafana/provisioning/        ← Grafana datasource + dashboard provisioning
-├── web/index.html                   ← Single-page Web UI (vanilla HTML/JS)
-├── tools/opcua-simulator/           ← Python OPC UA simulator for local testing
-├── certs/                           ← OPC UA PKI certificates (mounted at runtime)
-├── testing/                         ← Unit, integration, benchmark, fuzz, e2e tests
-├── Dockerfile                       ← Multi-stage: golang:1.22-alpine → alpine:3.19
-├── docker-compose.yaml              ← Dev stack: EMQX + Gateway + OPC UA Sim + Prometheus + Grafana
-└── docker-compose.test.yaml         ← Test stack: Mosquitto + Modbus Sim + OPC UA Sim + S7 Sim
+cmd/
+└── gateway/
+    └── main.go                 # Entry point, wiring, lifecycle
+
+internal/
+├── domain/                     # Pure domain model (zero dependencies)
+│   ├── device.go               # Device, ConnectionConfig, Tag entities
+│   ├── datapoint.go            # DataPoint, Quality, sync.Pool
+│   ├── protocol.go             # ProtocolPool interface, ProtocolManager
+│   └── errors.go               # Sentinel errors for all failure modes
+├── adapter/
+│   ├── modbus/                  # Modbus TCP/RTU adapter
+│   ├── opcua/                   # OPC UA adapter (sessions, load shaping)
+│   ├── s7/                      # Siemens S7 adapter
+│   ├── mqtt/                    # MQTT publisher with buffering
+│   └── config/                  # Viper-based configuration loading
+├── service/
+│   ├── polling.go               # Polling engine (per-device goroutines)
+│   └── command_handler.go       # MQTT command -> device write
+├── api/                         # HTTP handlers, CORS, auth middleware
+├── health/                      # Health checker with flapping protection
+└── metrics/                     # Prometheus metrics registry
+
+pkg/
+└── logging/                     # Structured zerolog wrapper
+
+web/                             # React 18 SPA (CDN, no build step)
+config/                          # config.yaml + devices.yaml
 ```
 
-## Key Data Flows
+---
 
-### Read Path (Device → MQTT)
-
-```mermaid
-sequenceDiagram
-    participant Timer as Poll Timer
-    participant PS as PollingService
-    participant PM as ProtocolManager
-    participant Pool as Connection Pool
-    participant Dev as Industrial Device
-    participant Pub as MQTT Publisher
-    participant Broker as EMQX Broker
-
-    Timer->>PS: Tick (per device interval)
-    PS->>PM: ReadTags(device, tags)
-    PM->>Pool: ReadTags(ctx, device, tags)
-    Pool->>Dev: Protocol-specific read (batch)
-    Dev-->>Pool: Raw bytes
-    Pool->>Pool: parseValue() + applyScaling()
-    Pool-->>PM: []DataPoint (value, quality, timestamps)
-    PM-->>PS: []DataPoint
-    PS->>Pub: PublishBatch(dataPoints)
-    Pub->>Broker: MQTT PUBLISH (UNS topic)
-    Note over Broker: Topic: {uns_prefix}/{topic_suffix}<br/>Payload: {"v":20.1,"u":"°C","q":"good","ts":...}
-```
-
-### Write Path (MQTT → Device)
-
-```mermaid
-sequenceDiagram
-    participant Client as MQTT Client
-    participant Broker as EMQX Broker
-    participant CMD as CommandHandler
-    participant PM as ProtocolManager
-    participant Pool as Connection Pool
-    participant Dev as Industrial Device
-
-    Client->>Broker: PUBLISH $nexus/cmd/{device}/{tag}/set
-    Broker->>CMD: Message delivered
-    CMD->>CMD: Parse command, find device+tag
-    CMD->>PM: WriteTag(device, tag, value)
-    PM->>Pool: WriteTag(ctx, device, tag, value)
-    Pool->>Pool: reverseScaling() + valueToBytes()
-    Pool->>Dev: Protocol-specific write
-    Dev-->>Pool: ACK / Error
-    Pool-->>CMD: success/error
-    CMD->>Broker: PUBLISH $nexus/cmd/{device}/{tag}/response
-    Note over Broker: {"success":true,"duration_ms":45}
-```
-
-## Quick Start
-
-```bash
-# Clone and start the dev stack
-git clone https://github.com/AlexandeC3U/ProtocolGateway
-cd Connector_Gateway
-docker compose up --build
-
-# Access:
-#   Web UI:          http://localhost:8080
-#   EMQX Dashboard:  http://localhost:18083  (admin / public)
-#   Prometheus:      http://localhost:9090
-#   Grafana:         http://localhost:3000    (admin / admin)
-```
-
-See [README.md](../README.md) for detailed setup and device configuration instructions.
+*Document Version: 2.3.0*
+*Last Updated: February 2026*

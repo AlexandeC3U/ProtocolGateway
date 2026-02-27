@@ -6,7 +6,8 @@
       "Bash(xargs cat:*)",
       "Bash(go vet:*)",
       "Bash(make test-ntp:*)",
-      "Bash(wc -l /c/Users/ceulea/Projects/Connector_Gateway/internal/**/*.go)"
+      "Bash(wc -l /c/Users/ceulea/Projects/Connector_Gateway/internal/**/*.go)",
+      "Bash(xargs grep -l \"offline\\\\|reconnect\")"
     ]
   }
 }
