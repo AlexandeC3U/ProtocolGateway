@@ -39,14 +39,21 @@ func (p *ConnectionPool) priorityQueueProcessor() {
 	defer p.wg.Done()
 
 	for {
-		// Process in priority order: safety (2), control (1), telemetry (0)
+		// Process in priority order: safety (2), control (1), telemetry (0).
+		// Each select level includes p.done to ensure clean shutdown.
+		// When Close() closes the priority queue channels, receives return nil;
+		// we treat nil as a shutdown signal to prevent spinning on closed channels.
 		var req *opRequest
 		select {
 		case req = <-p.priorityQueues[PrioritySafety]:
+		case <-p.done:
+			return
 		default:
 			select {
 			case req = <-p.priorityQueues[PrioritySafety]:
 			case req = <-p.priorityQueues[PriorityControl]:
+			case <-p.done:
+				return
 			default:
 				select {
 				case req = <-p.priorityQueues[PrioritySafety]:
@@ -59,7 +66,8 @@ func (p *ConnectionPool) priorityQueueProcessor() {
 		}
 
 		if req == nil {
-			continue
+			// nil from a closed channel — drain remaining and exit
+			return
 		}
 
 		// === DEADLINE PROPAGATION ===

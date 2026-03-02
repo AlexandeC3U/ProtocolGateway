@@ -1035,16 +1035,22 @@ func (p *ConnectionPool) RemoveClient(deviceID string) error {
 }
 
 // Close closes all sessions and stops the pool.
+// Shutdown order: signal done → wait for workers to exit → close queues → close sessions.
 func (p *ConnectionPool) Close() error {
 	p.mu.Lock()
 	p.closed = true
-	close(p.done) // Unblock healthCheckLoop and idleReaperLoop immediately
+	close(p.done) // Signal all workers, healthCheckLoop, idleReaperLoop to exit
+	p.mu.Unlock()
+
+	// Wait for priority queue processors, health checker, and reaper to exit.
+	// They will see p.done and return cleanly.
+	p.wg.Wait()
+
+	// Now that all workers have exited, close the priority queue channels.
+	// No goroutines are reading from them at this point.
 	for i := range p.priorityQueues {
 		close(p.priorityQueues[i])
 	}
-	p.mu.Unlock()
-
-	p.wg.Wait()
 
 	p.mu.Lock()
 	defer p.mu.Unlock()

@@ -4,7 +4,7 @@ Last verified against codebase: **2026-02-23**
 
 ---
 
-### 6. Separate Worker Pools Per Priority/QoS Tier - planned for V2
+### 6. Separate Worker Pools Per Priority/QoS Tier - planned for V3
 
 **Status**: Foundation exists but is not wired in.
 
@@ -21,7 +21,7 @@ Last verified against codebase: **2026-02-23**
 
 ---
 
-### 11. OPC UA Type System Fidelity - planned for V2
+### 11. OPC UA Type System Fidelity - planned for V3
 
 **Status**: Currently flattens all OPC UA values via `v.Value()` to basic Go types. Loses array types, LocalizedText, ExtensionObjects, Enums, structured types.
 
@@ -305,7 +305,7 @@ protocolManager.RegisterPool(domain.ProtocolMQTT, mqttSourcePool)
 - MQTT source metrics dashboard (Grafana panel)
 
 
-### 17. OPC UA Event & Alarm Support - planned for V2
+### 17. OPC UA Event & Alarm Support - planned for V3
 
 **Status**: Not implemented. Full OPC UA Alarms & Conditions (A&C) is a large subsystem:
 - Event subscriptions (not just data changes)
@@ -316,7 +316,7 @@ Consider as a separate project phase.
 
 ---
 
-### 20. Cross-Protocol Tag & Topic Browsing (Auto-Discovery) - planned for V2
+### 20. Cross-Protocol Tag & Topic Browsing (Auto-Discovery) - planned for V2 after MQTT
 
 **Status**: Manual tag entry only. No browse/discovery for any protocol.
 

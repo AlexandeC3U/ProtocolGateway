@@ -90,7 +90,7 @@ func main() {
 	if err := mqttPublisher.Connect(ctx); err != nil {
 		logger.Fatal().Err(err).Msg("Failed to connect to MQTT broker")
 	}
-	defer mqttPublisher.Disconnect()
+	// Note: publisher is disconnected explicitly during shutdown (not deferred).
 
 	// =============================================================
 	// Initialize Protocol Pools
@@ -109,7 +109,8 @@ func main() {
 		RetryDelay:         cfg.Modbus.RetryDelay,
 		CircuitBreakerName: "modbus-pool",
 	}, logger, metricsRegistry)
-	defer modbusPool.Close()
+	// Note: pool is closed explicitly during shutdown (not deferred)
+	// to ensure correct ordering: services stop before pools close.
 
 	// Register Modbus protocols
 	protocolManager.RegisterPool(domain.ProtocolModbusTCP, modbusPool)
@@ -129,7 +130,7 @@ func main() {
 		DefaultSecurityMode:   cfg.OPCUA.DefaultSecurityMode,
 		DefaultAuthMode:       cfg.OPCUA.DefaultAuthMode,
 	}, logger, metricsRegistry)
-	defer opcuaPool.Close()
+	// Note: pool is closed explicitly during shutdown (not deferred).
 
 	// Register OPC UA protocol
 	protocolManager.RegisterPool(domain.ProtocolOPCUA, opcuaPool)
@@ -166,7 +167,7 @@ func main() {
 			FailureThreshold: cfg.S7.CBFailureThreshold,
 		},
 	}, logger, metricsRegistry)
-	defer s7Pool.Close()
+	// Note: pool is closed explicitly during shutdown (not deferred).
 
 	// Register S7 protocol
 	protocolManager.RegisterPool(domain.ProtocolS7, s7Pool)
@@ -288,7 +289,7 @@ func main() {
 	} else {
 		logger.Info().Msg("Command handler started - bidirectional communication enabled")
 	}
-	defer cmdHandler.Stop()
+	// Note: command handler is stopped explicitly during shutdown (not deferred).
 
 	// =============================================================
 	// Initialize Health Checks and HTTP Server
@@ -470,29 +471,55 @@ func main() {
 
 	logger.Info().Msg("Shutdown signal received, initiating graceful shutdown...")
 
-	// Stop health checker first (marks state as shutting down)
-	healthChecker.Stop()
-
 	// Create shutdown context with timeout
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
-	// Stop command handler first
-	if err := cmdHandler.Stop(); err != nil {
-		logger.Error().Err(err).Msg("Error stopping command handler")
-	}
+	// Shutdown order matters — each step ensures no new work arrives before
+	// the next layer down is closed. The sequence is:
+	//
+	//   1. Health checker  → mark shutting down (probes return 503)
+	//   2. HTTP server     → stop accepting new API requests, drain in-flight
+	//   3. Command handler → stop processing MQTT write commands
+	//   4. Polling service → stop all device pollers, wait for workers to finish
+	//   5. Protocol pools  → close connections (no more readers/writers)
+	//   6. MQTT publisher  → flush remaining buffer, disconnect
+	//
+	// This guarantees that no component tries to use a resource that has
+	// already been torn down.
 
-	// Stop polling service
-	if err := pollingSvc.Stop(shutdownCtx); err != nil {
-		logger.Error().Err(err).Msg("Error stopping polling service")
-	}
+	// 1. Stop health checker (marks state as shutting down, probes return 503)
+	healthChecker.Stop()
 
-	// Shutdown HTTP server
+	// 2. Shutdown HTTP server (stop accepting requests, drain in-flight handlers)
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error().Err(err).Msg("Error shutting down HTTP server")
 	}
 
-	// Close protocol pools (handled by defer)
+	// 3. Stop command handler (stop processing MQTT write commands)
+	if err := cmdHandler.Stop(); err != nil {
+		logger.Error().Err(err).Msg("Error stopping command handler")
+	}
+
+	// 4. Stop polling service (cancel all device pollers, wait for workers)
+	if err := pollingSvc.Stop(shutdownCtx); err != nil {
+		logger.Error().Err(err).Msg("Error stopping polling service")
+	}
+
+	// 5. Close protocol pools (no more readers/writers at this point)
+	if err := opcuaPool.Close(); err != nil {
+		logger.Error().Err(err).Msg("Error closing OPC UA connection pool")
+	}
+	if err := modbusPool.Close(); err != nil {
+		logger.Error().Err(err).Msg("Error closing Modbus connection pool")
+	}
+	if err := s7Pool.Close(); err != nil {
+		logger.Error().Err(err).Msg("Error closing S7 connection pool")
+	}
+
+	// 6. Disconnect MQTT publisher last (flush remaining buffered messages)
+	mqttPublisher.Disconnect()
+
 	logger.Info().Msg("Protocol Gateway shutdown complete")
 }
 

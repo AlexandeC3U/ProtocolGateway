@@ -413,17 +413,27 @@ func (p *Publisher) bufferMessage(dataPoint *domain.DataPoint) error {
 		}
 		return nil
 	default:
-		// Buffer full, drop oldest message
+		// Buffer full — drop oldest to make room.
+		// Drain and re-send are both non-blocking to avoid a race where
+		// processBuffer() or another goroutine alters the channel between
+		// the drain and the send, which could cause this goroutine to block.
 		select {
 		case <-p.messageBuffer:
-			p.messageBuffer <- msg
+			// Drained one old message
+		default:
+			// processBuffer already drained it — space exists now
+		}
+		select {
+		case p.messageBuffer <- msg:
 			p.logger.Warn().Msg("Buffer full, dropped oldest message")
+			p.stats.MessagesBuffered.Add(1)
 			if p.metrics != nil {
 				p.metrics.UpdateMQTTBufferSize(len(p.messageBuffer))
 			}
 			return nil
 		default:
-			return fmt.Errorf("message buffer full")
+			// Another goroutine filled the slot — give up
+			return fmt.Errorf("message buffer full, contention too high")
 		}
 	}
 }
